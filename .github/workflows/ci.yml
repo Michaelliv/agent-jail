@@ -35,6 +35,9 @@ jobs:
       - name: harder.sh (unprivileged)
         run: ./tests/harder.sh
 
+      - name: edge.sh (cross-platform edge cases)
+        run: ./tests/edge.sh
+
       - name: landlock.sh (Linux only; skips if kernel lacks Landlock)
         if: matrix.os == 'ubuntu-latest'
         run: ./tests/landlock.sh

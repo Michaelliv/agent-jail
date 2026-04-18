@@ -144,6 +144,10 @@ zig build test                              # unit (Zig)
 ./tests/landlock.sh                         # 11 Landlock-backend probes
 ./tests/pidns.sh                            # 4 PID-namespace probes (Linux only)
 ./tests/darwin.sh                           # 9 Sandbox-kext probes (macOS only)
+./tests/edge.sh                             # 17 edge cases: SBPL injection,
+                                            #   dotdot paths, stdin/stdout
+                                            #   size, fork-bomb reaping,
+                                            #   weird unicode, path-max, ...
 
 # Root-only probes (prove the sandbox actually isolates):
 sudo ./tests/security.sh
