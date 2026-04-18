@@ -1,0 +1,73 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-linux-musl
+          - aarch64-linux-musl
+          - x86_64-macos
+          - aarch64-macos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Verify tag matches source version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          zon_ver=$(grep -oE '\.version = "[^"]+"' build.zig.zon | sed 's/.*"\(.*\)"/\1/')
+          src_ver=$(grep -oE 'agent-jail [0-9][^"]*' src/main.zig | awk '{print $2}')
+          echo "tag=$tag zon=$zon_ver src=$src_ver"
+          test "$tag" = "$zon_ver" || { echo "build.zig.zon version ($zon_ver) != tag ($tag)"; exit 1; }
+          test "$tag" = "$src_ver" || { echo "src/main.zig version ($src_ver) != tag ($tag)"; exit 1; }
+
+      - name: Build ${{ matrix.target }}
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSmall
+
+      - name: Package
+        run: |
+          name="agent-jail-${{ matrix.target }}"
+          cp zig-out/bin/agent-jail "$name"
+          sha256sum "$name" > "$name.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-jail-${{ matrix.target }}
+          path: |
+            agent-jail-${{ matrix.target }}
+            agent-jail-${{ matrix.target }}.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List assets
+        run: ls -la dist/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
