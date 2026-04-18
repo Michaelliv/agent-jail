@@ -66,14 +66,16 @@ pub const Plan = struct {
 /// Apply chown/chmod to the hide and rw paths so the kernel's permission
 /// check enforces the sandbox boundary for the child.
 ///
-/// - `hide`: chown to caller, mode 0700 → child uid sees EACCES.
-/// - `rw`:   created if missing, chown to sandbox uid, mode 0700.
+/// - `hide`: chmod 0700 (best-effort — silent skip if we don't own it),
+///           plus chown to caller when uid switching.
+/// - `rw`:   created if missing, mode 0700 (only on paths we created or
+///           when uid switching), chown to sandbox uid when switching.
 ///
-/// Without uid switching, the chmods are not load-bearing (the child runs
-/// as the same uid as the caller, so the kernel's permission check sees
-/// the original mode regardless of what we set). Skip them when we'd be
-/// touching paths we don't own — e.g. `--rw /dev` from an unprivileged
-/// caller — because the chmod would fail loudly with AccessDenied.
+/// The chmods on pre-existing `--rw` paths are deliberately skipped
+/// without uid switching — they'd fail loudly on root-owned paths like
+/// `--rw /dev`, and they'd be wrong on shared dirs the caller passed in.
+/// Hide chmods tolerate AccessDenied for the same reason; the canonical
+/// `--hide /etc` shouldn't refuse to run.
 pub fn applyPermissions(args: Args.Parsed, ids: Ids) Error!void {
     // chown(2) requires root even to set a file to its current owner, so
     // skip it entirely when we aren't switching uid.
@@ -84,7 +86,14 @@ pub fn applyPermissions(args: Args.Parsed, ids: Ids) Error!void {
 
     for (args.hide) |path| {
         if (switching_uid) try chownIfExists(path, caller_uid, caller_gid);
-        if (switching_uid) try chmodIfExists(path, 0o700);
+        // Always try chmod — even without uid switching, locking a
+        // caller-owned path to 0700 hides it from other host users.
+        // Tolerate AccessDenied (path isn't ours; nothing to do without
+        // root) so e.g. `--hide /etc` doesn't error out.
+        chmodIfExists(path, 0o700) catch |err| switch (err) {
+            error.AccessDenied => {},
+            else => return err,
+        };
     }
 
     for (args.rw) |path| {
