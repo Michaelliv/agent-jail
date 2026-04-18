@@ -1,7 +1,7 @@
 .{
-    .name = .uidjail,
+    .name = .agent_jail,
     .version = "0.1.0",
-    .fingerprint = 0x8dc0e400a6f77cf0,
+    .fingerprint = 0x616a2e12c8d78aa0,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},
     .paths = .{

@@ -1,4 +1,4 @@
-# uidjail
+# agent-jail
 
 A portable filesystem sandbox for spawning untrusted subprocesses.
 
@@ -15,7 +15,7 @@ can't be delivered.
 ## Example
 
 ```
-uidjail \
+agent-jail \
   --uid 1001 \
   --allow-rw /var/lib/myapp/workspaces/job-42 \
   --allow-ro /usr --allow-ro /lib --allow-ro /lib64 --allow-ro /etc \
@@ -33,7 +33,7 @@ hard error — we refuse to run without the isolation you asked for.
 
 ## What it doesn't do
 
-uidjail covers one thing: **a spawned subprocess reading or writing files
+agent-jail covers one thing: **a spawned subprocess reading or writing files
 it shouldn't.** It explicitly does NOT:
 
 - Isolate PIDs (use `unshare -p` or a container for that)
@@ -44,8 +44,8 @@ it shouldn't.** It explicitly does NOT:
 - Sanitize the environment (env vars pass through — sanitize before invoking)
 - Resolve users by name (pass numeric `--uid` / `--gid`)
 
-If you need any of these, layer uidjail with the right tool for the job.
-uidjail is the portable filesystem-isolation piece, not the whole stack.
+If you need any of these, layer agent-jail with the right tool for the job.
+agent-jail is the portable filesystem-isolation piece, not the whole stack.
 
 ## Why the three backends
 
@@ -60,15 +60,15 @@ Every sandboxing tool depends on a specific kernel mechanism:
   (Oracle Linux UEK, some RHEL builds).
 - **POSIX uid + permissions** — universal but requires root to set up.
 
-uidjail treats these as a dispatch table: the caller states the guarantee
+agent-jail treats these as a dispatch table: the caller states the guarantee
 they want (`--uid` for uid switch, `--allow-*` for path isolation), and
-uidjail picks what the host can deliver, or errors clearly.
+agent-jail picks what the host can deliver, or errors clearly.
 
 ## Install
 
 ```
 zig build -Doptimize=ReleaseSmall
-sudo cp zig-out/bin/uidjail /usr/local/bin/
+sudo cp zig-out/bin/agent-jail /usr/local/bin/
 ```
 
 Cross-compile:
@@ -86,7 +86,7 @@ Requires Zig 0.16+. Single static binary ~215 KB stripped, no runtime deps.
 
 ```
 Usage:
-  uidjail [options] -- COMMAND [ARGS...]
+  agent-jail [options] -- COMMAND [ARGS...]
 
 Options:
   --uid N         Drop to this uid before exec (needs root).
@@ -108,7 +108,7 @@ Options:
 ### Production: sandbox an agent on Render / Fly (no root, no privileged)
 
 ```
-uidjail \
+agent-jail \
   --allow-rw /data/workspace \
   --allow-ro /usr --allow-ro /lib --allow-ro /lib64 --allow-ro /etc --allow-ro /bin \
   -- /app/agent
@@ -119,7 +119,7 @@ Kernel-enforced. Works inside a default Docker container.
 ### Self-hosted with root: belt-and-suspenders
 
 ```
-uidjail \
+agent-jail \
   --uid 65534 \
   --allow-rw /data/workspace \
   --allow-ro /usr --allow-ro /lib --allow-ro /lib64 --allow-ro /etc \
@@ -131,13 +131,13 @@ Child runs as nobody AND is Landlock-restricted. Two independent layers.
 ### Classic uid switch (macOS, older Linux without Landlock)
 
 ```
-uidjail --uid 65534 --deny /etc/secrets -- cat /etc/secrets/api-key
+agent-jail --uid 65534 --deny /etc/secrets -- cat /etc/secrets/api-key
 # cat: /etc/secrets/api-key: Permission denied
 ```
 
 ## Threat model
 
-uidjail assumes:
+agent-jail assumes:
 
 - The host kernel correctly enforces POSIX permissions AND (when used)
   Landlock path rules. I.e. the kernel is not compromised.
@@ -149,7 +149,7 @@ uidjail assumes:
   does NOT set `PR_SET_NO_NEW_PRIVS`, so if you rely only on uid switch
   make sure the sandbox can't reach a vulnerable setuid binary.
 
-uidjail does NOT assume:
+agent-jail does NOT assume:
 
 - Any specific kernel version (uid-switch works everywhere; Landlock auto-skips
   on pre-5.13 kernels unless `--allow-ro` was requested, in which case we
@@ -164,7 +164,7 @@ zig build test                              # unit (Zig)
 ./tests/integration.sh                      # 9 end-to-end
 ./tests/security.sh                         # 27 probes (4 root-only, skipped)
 ./tests/harder.sh                           # 18 adversarial (4 root-only)
-./tests/landlock.sh                         # 12 Landlock-backend probes (skipped
+./tests/landlock.sh                         # 11 Landlock-backend probes (skipped
                                             #   on non-Landlock hosts)
 
 # Root-only probes (prove the sandbox actually isolates):

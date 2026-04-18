@@ -44,7 +44,7 @@ echo
 
 SYSTEM_RO=(--allow-ro /usr --allow-ro /lib --allow-ro /lib64 --allow-ro /bin --allow-ro /etc)
 
-# Run uidjail with the standard system-RO allow-list plus whatever extra
+# Run agent-jail with the standard system-RO allow-list plus whatever extra
 # args the caller passes. Extra args come before the `--`.
 uj() {
   "$BIN" "${SYSTEM_RO[@]}" "$@"

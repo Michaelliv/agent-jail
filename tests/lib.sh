@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Shared helpers for uidjail test suites. Source from each .sh under tests/.
+# Shared helpers for agent-jail test suites. Source from each .sh under tests/.
 
-BIN="${UIDJAIL_BIN:-./zig-out/bin/uidjail}"
+BIN="${AGENT_JAIL_BIN:-./zig-out/bin/agent-jail}"
 
 PASS=0
 FAIL=0

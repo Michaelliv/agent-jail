@@ -1,4 +1,4 @@
-//! CLI argument parsing for uidjail.
+//! CLI argument parsing for agent-jail.
 
 const std = @import("std");
 const mem = std.mem;
@@ -89,7 +89,7 @@ test "parse minimal" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const argv = [_][:0]const u8{ "uidjail", "--uid", "1001", "--", "/bin/echo", "hi" };
+    const argv = [_][:0]const u8{ "agent-jail", "--uid", "1001", "--", "/bin/echo", "hi" };
     const parsed = try parse(arena, &argv);
 
     try std.testing.expectEqual(@as(?u32, 1001), parsed.uid);
@@ -105,7 +105,7 @@ test "parse deny+allow" {
     const arena = arena_state.allocator();
 
     const argv = [_][:0]const u8{
-        "uidjail",
+        "agent-jail",
         "--uid",                "1001",
         "--deny",               "/data",
         "--allow-rw",           "/data/work",
@@ -125,6 +125,6 @@ test "missing value" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const argv = [_][:0]const u8{ "uidjail", "--uid" };
+    const argv = [_][:0]const u8{ "agent-jail", "--uid" };
     try std.testing.expectError(error.MissingValue, parse(arena, &argv));
 }

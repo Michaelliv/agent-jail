@@ -110,7 +110,7 @@ pub fn pickBackend(args: Args.Parsed) Backend {
 /// if exec failed).
 ///
 /// Signal forwarding: handlers for TERM/INT/HUP/QUIT in the parent relay to
-/// the entire child process group so killing uidjail reaps the whole tree
+/// the entire child process group so killing agent-jail reaps the whole tree
 /// rather than orphaning it to init.
 ///
 /// Not safe to call concurrently from multiple threads in the same process —
@@ -142,7 +142,7 @@ pub fn spawnAndWait(gpa: std.mem.Allocator, args: Args.Parsed, ids: Ids) Error!u
         childSetup(args, ids, cwdz);
         _ = c.execvp(argvz[0].?, argvz.ptr);
         // execvp only returns on failure.
-        writeStderr("uidjail: exec failed\n");
+        writeStderr("agent-jail: exec failed\n");
         c.exit(127);
     }
 
@@ -176,7 +176,7 @@ pub fn spawnAndWait(gpa: std.mem.Allocator, args: Args.Parsed, ids: Ids) Error!u
 fn childSetup(args: Args.Parsed, ids: Ids, cwdz: ?[*:0]const u8) void {
     if (cwdz) |p| {
         if (c.chdir(p) != 0) {
-            writeStderr("uidjail: chdir failed\n");
+            writeStderr("agent-jail: chdir failed\n");
             c.exit(127);
         }
     }
@@ -192,11 +192,11 @@ fn childSetup(args: Args.Parsed, ids: Ids, cwdz: ?[*:0]const u8) void {
     if (args.uid != null) {
         _ = c.setgroups(0, null);
         if (c.setGidAll(ids.gid) != 0) {
-            writeStderr("uidjail: set gid failed\n");
+            writeStderr("agent-jail: set gid failed\n");
             c.exit(127);
         }
         if (c.setUidAll(ids.uid) != 0) {
-            writeStderr("uidjail: set uid failed\n");
+            writeStderr("agent-jail: set uid failed\n");
             c.exit(127);
         }
     }
@@ -218,7 +218,7 @@ fn applyLandlockIfRequested(args: Args.Parsed) void {
         // isolation and we couldn't deliver it. Better to error than ship a
         // false sense of security.
         var msg_buf: [128]u8 = undefined;
-        const msg = std.fmt.bufPrint(&msg_buf, "uidjail: landlock failed: {s}\n", .{@errorName(err)}) catch "uidjail: landlock failed\n";
+        const msg = std.fmt.bufPrint(&msg_buf, "agent-jail: landlock failed: {s}\n", .{@errorName(err)}) catch "agent-jail: landlock failed\n";
         writeStderr(msg);
         c.exit(127);
     };
@@ -258,7 +258,7 @@ fn writeStderr(s: []const u8) void {
 
 /// Forward termination signals from the parent to the child's process group.
 /// A process-global `child_pid` is required because POSIX signal handlers
-/// take only the signal number — no userdata pointer. Safe because uidjail
+/// take only the signal number — no userdata pointer. Safe because agent-jail
 /// wraps exactly one child per invocation, single-threaded.
 const signal_forward = struct {
     var child_pid: std.c.pid_t = 0;

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end integration test for uidjail. Runs the built binary against real
+# End-to-end integration test for agent-jail. Runs the built binary against real
 # spawned subprocesses and checks behavior. Does NOT require root.
 set -uo pipefail
 
@@ -20,7 +20,7 @@ test_help_exits_0() {
 test_version() {
   echo "test: --version prints version"
   out=$("$BIN" --version)
-  [[ "$out" == "uidjail 0.1.0" ]] && ok "got '$out'" || fail "got '$out'"
+  [[ "$out" == "agent-jail 0.1.0" ]] && ok "got '$out'" || fail "got '$out'"
 }
 
 test_missing_command() {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Adversarial security + edge-case tests for uidjail. Probes the actual
+# Adversarial security + edge-case tests for agent-jail. Probes the actual
 # security properties: do denies actually deny? does uid drop actually drop?
 # do symlinks trick us? etc. Root-only tests skip cleanly if not root.
 set -uo pipefail
@@ -13,7 +13,7 @@ require_tools true echo sleep sh cat pwd id
 TMP=$(mktemp -d)
 # When running as root, mktemp creates 0700 — an unprivileged child can't
 # traverse it to reach --allow-rw dirs inside. Make it traversable for the
-# root-mode tests (the sandbox dirs themselves stay 0700 via uidjail).
+# root-mode tests (the sandbox dirs themselves stay 0700 via agent-jail).
 chmod 0755 "$TMP"
 trap 'rm -rf "$TMP" 2>/dev/null' EXIT
 
@@ -249,9 +249,9 @@ test_uid_drop_cannot_re_elevate() {
 
 # ── Process lifecycle ──────────────────────────────────────────────
 
-test_killing_uidjail_reaps_child() {
-  echo "test: SIGTERM to uidjail terminates the long-running child"
-  marker="uidjail-reap-test-$$-$RANDOM"
+test_killing_agent_jail_reaps_child() {
+  echo "test: SIGTERM to agent-jail terminates the long-running child"
+  marker="agent-jail-reap-test-$$-$RANDOM"
   "$BIN" -- "$SH" -c "exec -a $marker $SLEEP 30" &
   parent_pid=$!
   sleep 0.5
@@ -298,6 +298,6 @@ test_uid_drop_actually_isolates
 test_uid_drop_blocks_root_files
 test_uid_drop_blocks_workspace_escape
 test_uid_drop_cannot_re_elevate
-test_killing_uidjail_reaps_child
+test_killing_agent_jail_reaps_child
 
 summary_and_exit

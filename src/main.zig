@@ -1,4 +1,4 @@
-//! uidjail — portable filesystem sandbox for spawning untrusted subprocesses.
+//! agent-jail — portable filesystem sandbox for spawning untrusted subprocesses.
 //!
 //! Picks the strongest backend available at runtime:
 //!   - uid switch (any POSIX) when --uid is set and caller is root
@@ -34,19 +34,19 @@ pub fn main(init: std.process.Init) !u8 {
             return 0;
         },
         error.VersionRequested => {
-            try stdout.writeAll("uidjail 0.1.0\n");
+            try stdout.writeAll("agent-jail 0.1.0\n");
             try stdout.flush();
             return 0;
         },
         else => |e| {
-            try stderr.print("uidjail: {s}\n", .{@errorName(e)});
+            try stderr.print("agent-jail: {s}\n", .{@errorName(e)});
             try printUsage(stderr);
             return 2;
         },
     };
 
     if (parsed.command.len == 0) {
-        try stderr.writeAll("uidjail: missing command after --\n");
+        try stderr.writeAll("agent-jail: missing command after --\n");
         try stderr.flush();
         return 2;
     }
@@ -58,7 +58,7 @@ pub fn main(init: std.process.Init) !u8 {
     const backend = sandbox.pickBackend(parsed);
     if (wants_landlock and backend != .landlock and backend != .uid_and_landlock) {
         try stderr.writeAll(
-            \\uidjail: --allow-ro requires Landlock (Linux 5.13+ with
+            \\agent-jail: --allow-ro requires Landlock (Linux 5.13+ with
             \\  CONFIG_SECURITY_LANDLOCK=y and 'landlock' in the LSM list).
             \\  Host lacks support. Refusing to run without it.
             \\
@@ -73,13 +73,13 @@ pub fn main(init: std.process.Init) !u8 {
     };
 
     sandbox.applyPermissions(parsed, ids) catch |err| {
-        try stderr.print("uidjail: applyPermissions failed: {s}\n", .{@errorName(err)});
+        try stderr.print("agent-jail: applyPermissions failed: {s}\n", .{@errorName(err)});
         try stderr.flush();
         return 1;
     };
 
     return sandbox.spawnAndWait(init.gpa, parsed, ids) catch |err| {
-        try stderr.print("uidjail: spawn failed: {s}\n", .{@errorName(err)});
+        try stderr.print("agent-jail: spawn failed: {s}\n", .{@errorName(err)});
         try stderr.flush();
         return 1;
     };
@@ -87,10 +87,10 @@ pub fn main(init: std.process.Init) !u8 {
 
 fn printUsage(w: *std.Io.Writer) !void {
     try w.writeAll(
-        \\uidjail — portable filesystem sandbox for spawning untrusted subprocesses
+        \\agent-jail — portable filesystem sandbox for spawning untrusted subprocesses
         \\
         \\Usage:
-        \\  uidjail [options] -- COMMAND [ARGS...]
+        \\  agent-jail [options] -- COMMAND [ARGS...]
         \\
         \\Options:
         \\  --uid N                Drop to this uid before exec (needs root)

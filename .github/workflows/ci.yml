@@ -41,11 +41,11 @@ jobs:
 
       - name: security.sh (root) — Linux only
         if: matrix.os == 'ubuntu-latest'
-        run: sudo UIDJAIL_BIN=./zig-out/bin/uidjail ./tests/security.sh
+        run: sudo AGENT_JAIL_BIN=./zig-out/bin/agent-jail ./tests/security.sh
 
       - name: harder.sh (root) — Linux only
         if: matrix.os == 'ubuntu-latest'
-        run: sudo UIDJAIL_BIN=./zig-out/bin/uidjail ./tests/harder.sh
+        run: sudo AGENT_JAIL_BIN=./zig-out/bin/agent-jail ./tests/harder.sh
 
   cross-compile:
     runs-on: ubuntu-latest
@@ -63,6 +63,6 @@ jobs:
             echo "=== $target ==="
             zig build -Dtarget=$target -Doptimize=ReleaseSmall
             ls -la zig-out/bin/
-            file zig-out/bin/uidjail || true
+            file zig-out/bin/agent-jail || true
             rm -rf zig-out
           done

@@ -157,7 +157,7 @@ test_setuid_binary_cannot_give_root_back() {
 
 test_env_leaks_by_default() {
   echo "test: environment is passed through (documented behavior)"
-  out=$(UIDJAIL_TEST_SECRET=hunter2 "$BIN" -- "$SH" -c 'echo "$UIDJAIL_TEST_SECRET"')
+  out=$(AGENT_JAIL_TEST_SECRET=hunter2 "$BIN" -- "$SH" -c 'echo "$AGENT_JAIL_TEST_SECRET"')
   if [[ "$out" == "hunter2" ]]; then
     ok "env inherited (callers must sanitize — see README)"
   else
@@ -203,7 +203,7 @@ test_many_allow_rw_flags() {
 # ── 9. Concurrent safety ────────────────────────────────────────────
 
 test_concurrent_invocations() {
-  echo "test: 5 concurrent uidjail invocations don't interfere"
+  echo "test: 5 concurrent agent-jail invocations don't interfere"
   rm -rf "$TMP/conc"
   pids=()
   for i in 1 2 3 4 5; do
