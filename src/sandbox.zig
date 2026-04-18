@@ -1,12 +1,18 @@
-//! Sandboxing core: permission setup + spawn with dropped uid.
+//! Sandboxing core: permission setup + spawn with backend dispatch.
 //!
-//! Filesystem ownership/mode is enforced via libc chown/chmod (POSIX).
-//! Process spawn does its own fork + execvp because std.process.spawn does
-//! not close caller-inherited FDs (>= 3) and does not drop supplementary
-//! groups — both real security holes for a sandbox tool. Manual fork lets
-//! us do the full child-side setup ourselves: chdir, new process group,
-//! close all non-stdio FDs, setgroups(0), setresgid, setresuid, then exec.
-//! The kernel transitions identity; the child can never elevate back.
+//! Two backends, either or both may apply per call:
+//!   - uid switch: chown/chmod deny+allow-rw paths, then in the child call
+//!     setgroups(0)/setresgid/setresuid before exec. POSIX, any UNIX.
+//!   - Landlock: in the child, apply a landlock ruleset with path-beneath
+//!     rules right before exec. Linux 5.13+, unprivileged.
+//!
+//! We do our own fork + execvp because std.process.spawn doesn't close
+//! caller-inherited FDs (>= 3) and doesn't drop supplementary groups —
+//! both real security holes for a sandbox tool. Manual fork lets us
+//! control the full child-side setup: chdir, new process group, close all
+//! non-stdio FDs, Landlock (if requested), setgroups(0), setresgid,
+//! setresuid, then exec. The kernel transitions identity and applies the
+//! Landlock domain; the child can never relax either.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -24,7 +30,6 @@ pub const Error = error{
     ForkFailed,
     OutOfMemory,
     PathTooLong,
-    SandboxUnavailable,
     Unexpected,
 };
 

@@ -3,78 +3,66 @@
 A portable filesystem sandbox for spawning untrusted subprocesses.
 
 One static binary, ~215 KB, no runtime dependencies. Picks the strongest
-isolation mechanism available at runtime and fails loud when the requested
-guarantee can't be delivered.
+backend available at runtime and fails loud when the requested guarantee
+can't be delivered.
 
 | Backend | When | What it does |
 |---|---|---|
-| **uid switch** | `--uid N` and caller is root | `setresuid` / `setresgid` to the sandbox uid after dropping supplementary groups; POSIX permission check enforces the boundary. Strongest. Works on any UNIX kernel. |
-| **Landlock** | `--allow-ro` / `--allow-rw` on Linux 5.13+ | Applies a Landlock ruleset with path-beneath rules before exec. Works unprivileged — no root, no caps, no `--privileged` container flag. |
-| **Defense in depth** | `--uid` + `--allow-*` on Linux with Landlock | Both layers active: kernel enforces uid AND path restrictions. |
+| **uid switch** | `--uid N` | `setresuid` / `setresgid` to the sandbox uid after dropping supplementary groups; the POSIX permission check enforces the boundary. Works on any UNIX kernel. Needs root at invocation time. |
+| **Landlock** | `--allow-ro` / `--allow-rw` on Linux 5.13+ | Applies a Landlock LSM ruleset with path-beneath rules before exec. Works **unprivileged** — no root, no caps, no `--privileged` container flag. The only mechanism that works on Render, Fly, and other managed platforms. |
+| **Defense in depth** | `--uid` + `--allow-*` on Linux with Landlock | Both layers active in the same child: kernel enforces uid drop AND path restrictions. |
 
-## What it does
+## Example
 
 ```
 uidjail \
   --uid 1001 \
-  --deny /data \
-  --allow-rw /data/workspaces/foo \
-  --allow-rw /data/sessions/bar \
+  --allow-rw /var/lib/myapp/workspaces/job-42 \
+  --allow-ro /usr --allow-ro /lib --allow-ro /lib64 --allow-ro /etc \
   -- /usr/local/bin/agent --mode rpc ...
 ```
 
-Under the hood:
+On Linux, this runs `agent` with uid=1001 AND a Landlock domain that only
+permits read+write under the workspace and read+exec under the system dirs.
+Every other `open()` / `read()` / `write()` returns EACCES at the kernel
+boundary.
 
-1. `chmod 0700` on every `--deny` path (chowned to caller when `--uid` is set).
-2. `mkdir -p` + `chown uid:gid` + `chmod 0700` on every `--allow-rw` path.
-3. `fork()`. In the child:
-   - `chdir(--cwd)` if given.
-   - `setpgid(0, 0)` — fresh process group so signal forwarding can reach the whole tree.
-   - Close every FD ≥ 3 — nothing the caller had open leaks into the sandbox.
-   - `setgroups(0, NULL)` — drop supplementary group list (else child stays in caller's groups, e.g. `wheel` or `0`).
-   - `setresgid(gid)` then `setresuid(uid)` — kernel enforces; can't be undone.
-   - `execvp(cmd, args)`.
-4. In the parent: install signal handlers for TERM/INT/HUP/QUIT that forward
-   to the child's process group, then `waitpid` and exit with its status.
-
-Every `open()`, `read()`, `write()` against a denied path returns EACCES — the
-kernel's permission check, the same code path that has enforced UNIX file
-security since the 1970s. It cannot be bypassed by any userspace mechanism.
+On macOS (or Linux without Landlock), the same invocation drops to uid=1001
+and chmods the allow-rw dir; Landlock is unavailable so `--allow-ro` is a
+hard error — we refuse to run without the isolation you asked for.
 
 ## What it doesn't do
 
-uidjail covers exactly one threat: **a spawned subprocess reading or writing
-files it shouldn't.** It explicitly does NOT:
+uidjail covers one thing: **a spawned subprocess reading or writing files
+it shouldn't.** It explicitly does NOT:
 
-- Isolate PIDs (the sandboxed process can `ps` and see other processes — it
-  can't signal or read their memory, but it sees them)
-- Isolate networking (use iptables, nftables, or `unshare -n` if you need it)
+- Isolate PIDs (use `unshare -p` or a container for that)
+- Isolate networking (use iptables, nftables, or `unshare -n`)
 - Limit resources (use cgroups or ulimit)
-- Drop capabilities (the sandbox uid has none to begin with)
-- Filter syscalls (use seccomp if you need it)
-- Hide denied paths (they return EACCES, not ENOENT)
-- Sanitize the environment (env vars pass through; sanitize before invoking)
+- Filter syscalls (use seccomp)
+- Hide denied paths (uid-switch returns EACCES; Landlock returns EACCES)
+- Sanitize the environment (env vars pass through — sanitize before invoking)
 - Resolve users by name (pass numeric `--uid` / `--gid`)
 
-If you need any of these, layer uidjail with the right tool for the job —
-bwrap, firejail, nsjail, landlock, gVisor. uidjail is the portable foundation,
-not the whole stack.
+If you need any of these, layer uidjail with the right tool for the job.
+uidjail is the portable filesystem-isolation piece, not the whole stack.
 
-## Why it's portable
+## Why the three backends
 
-Every other sandbox tool depends on a specific kernel feature:
+Every sandboxing tool depends on a specific kernel mechanism:
 
 - **bwrap / firejail / nsjail** — mount namespaces, need `CAP_SYS_ADMIN` or
-  unprivileged userns. Don't work on Render, Fly, Cloud Run, or any managed
-  container platform.
-- **landrun / island** — Landlock LSM, needs the kernel feature compiled AND
-  enabled in the LSM stack. Off by default on Oracle Linux UEK and several
-  other distros.
+  unprivileged user namespaces. Don't work on Render, Fly, Cloud Run, or
+  any managed container platform that blocks namespace creation.
 - **sandbox-exec** — macOS only.
+- **Landlock (kernel LSM)** — unprivileged, works everywhere Linux 5.13+
+  ships with the LSM enabled. Off by default on some enterprise distros
+  (Oracle Linux UEK, some RHEL builds).
+- **POSIX uid + permissions** — universal but requires root to set up.
 
-POSIX uid + permissions is the one mechanism guaranteed to behave identically
-on every UNIX. The kernel's `permission()` check is universal and cannot be
-turned off.
+uidjail treats these as a dispatch table: the caller states the guarantee
+they want (`--uid` for uid switch, `--allow-*` for path isolation), and
+uidjail picks what the host can deliver, or errors clearly.
 
 ## Install
 
@@ -92,7 +80,7 @@ zig build -Dtarget=x86_64-macos        -Doptimize=ReleaseSmall
 zig build -Dtarget=aarch64-macos       -Doptimize=ReleaseSmall
 ```
 
-Requires Zig 0.16+. Single static binary, ~210 KB stripped, no runtime deps.
+Requires Zig 0.16+. Single static binary ~215 KB stripped, no runtime deps.
 
 ## CLI
 
@@ -101,12 +89,15 @@ Usage:
   uidjail [options] -- COMMAND [ARGS...]
 
 Options:
-  --uid N         Sandbox uid; the child is dropped to this uid before exec.
-  --gid N         Sandbox gid; defaults to --uid if omitted.
-  --deny PATH     Path the sandboxed process must not access (chmod 0700).
-                  Repeatable. Nonexistent paths are no-ops.
-  --allow-rw PATH Path the sandboxed process can read+write. Created if
-                  missing, chowned to sandbox uid, chmod 0700. Repeatable.
+  --uid N         Drop to this uid before exec (needs root).
+  --gid N         Drop to this gid (defaults to --uid).
+  --deny PATH     chmod 0700 this path (uid-switch mode only). Repeatable.
+                  Nonexistent paths are no-ops.
+  --allow-rw PATH Sandbox may read+write under PATH. Repeatable. Creates
+                  the dir if missing, chmods 0700, chowns to sandbox uid.
+                  Under Landlock, grants path-beneath rw+exec.
+  --allow-ro PATH Sandbox may read+execute under PATH (Landlock-only).
+                  Repeatable. Requires Linux 5.13+ with Landlock enabled.
   --cwd PATH      Working directory for the child.
   -h, --help      Show help.
   -V, --version   Show version.
@@ -114,67 +105,76 @@ Options:
 
 ## Examples
 
-### Run as nobody, deny `/etc/secrets`
+### Production: sandbox an agent on Render / Fly (no root, no privileged)
+
+```
+uidjail \
+  --allow-rw /data/workspace \
+  --allow-ro /usr --allow-ro /lib --allow-ro /lib64 --allow-ro /etc --allow-ro /bin \
+  -- /app/agent
+```
+
+Kernel-enforced. Works inside a default Docker container.
+
+### Self-hosted with root: belt-and-suspenders
+
+```
+uidjail \
+  --uid 65534 \
+  --allow-rw /data/workspace \
+  --allow-ro /usr --allow-ro /lib --allow-ro /lib64 --allow-ro /etc \
+  -- /app/agent
+```
+
+Child runs as nobody AND is Landlock-restricted. Two independent layers.
+
+### Classic uid switch (macOS, older Linux without Landlock)
 
 ```
 uidjail --uid 65534 --deny /etc/secrets -- cat /etc/secrets/api-key
 # cat: /etc/secrets/api-key: Permission denied
 ```
 
-### Allow a workspace, deny everything sensitive
-
-```
-uidjail \
-  --uid 1001 \
-  --deny /var/lib/myapp \
-  --allow-rw /var/lib/myapp/workspaces/job-42 \
-  -- ./untrusted-script.sh
-```
-
-### Run unsandboxed (no `--uid`) — useful for `--allow-rw` setup as caller
-
-```
-uidjail --allow-rw /tmp/scratch -- /bin/sh -c 'echo hi > /tmp/scratch/x'
-```
-
 ## Threat model
 
 uidjail assumes:
 
-- The host kernel correctly enforces POSIX file permissions (i.e. the kernel
-  is not compromised).
-- The sandboxed subprocess does not have CAP_DAC_OVERRIDE, CAP_FOWNER, or any
-  way to escalate to root. uidjail enforces this by running the child as an
-  unprivileged uid.
-- The sandboxed subprocess cannot acquire setuid binaries on the system that
-  let it bypass uid restrictions. If your `/usr/bin/sudo` is misconfigured to
-  allow the sandbox uid to run arbitrary commands, uidjail does not protect
-  you.
+- The host kernel correctly enforces POSIX permissions AND (when used)
+  Landlock path rules. I.e. the kernel is not compromised.
+- The sandboxed subprocess cannot acquire CAP_DAC_OVERRIDE, CAP_FOWNER, or
+  equivalent. uid switch guarantees this by dropping to an unprivileged uid;
+  Landlock guarantees this via `PR_SET_NO_NEW_PRIVS`.
+- setuid binaries the sandbox can exec cannot be used to escalate. `PR_SET_NO_NEW_PRIVS`
+  (set by the Landlock path) makes this kernel-enforced. uid-switch alone
+  does NOT set `PR_SET_NO_NEW_PRIVS`, so if you rely only on uid switch
+  make sure the sandbox can't reach a vulnerable setuid binary.
 
 uidjail does NOT assume:
 
-- Any specific kernel version
-- Any specific LSM (SELinux, AppArmor, Landlock, etc.)
-- Any specific container runtime
-- Root is needed at runtime — only required when `--uid` is used (to call
-  setuid/setgid) or when chowning paths the caller doesn't already own.
+- Any specific kernel version (uid-switch works everywhere; Landlock auto-skips
+  on pre-5.13 kernels unless `--allow-ro` was requested, in which case we
+  refuse to run).
+- Any container runtime. Managed platforms (Render, Fly, Cloud Run) all work
+  with the Landlock backend.
 
 ## Tests
 
-Three suites, all expected green:
-
 ```
-zig build test                              # unit
+zig build test                              # unit (Zig)
 ./tests/integration.sh                      # 9 end-to-end
-./tests/security.sh                         # 27 (4 root-only, skipped if not root)
-./tests/harder.sh                           # 18 (4 root-only, skipped if not root)
+./tests/security.sh                         # 27 probes (4 root-only, skipped)
+./tests/harder.sh                           # 18 adversarial (4 root-only)
+./tests/landlock.sh                         # 12 Landlock-backend probes (skipped
+                                            #   on non-Landlock hosts)
 
-# Run root-only tests (the ones that prove the sandbox actually isolates):
+# Root-only probes (prove the sandbox actually isolates):
 sudo ./tests/security.sh
 sudo ./tests/harder.sh
+sudo ./tests/landlock.sh
 ```
 
-CI runs all of the above on macOS and Linux on every push.
+CI runs all suites on macOS and Linux on every push. The Landlock suite runs
+on ubuntu-latest (which ships Landlock enabled) and skips on hosts without it.
 
 ## License
 

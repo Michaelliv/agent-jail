@@ -1,8 +1,12 @@
-//! uidjail — portable filesystem sandbox via POSIX uid + permissions.
+//! uidjail — portable filesystem sandbox for spawning untrusted subprocesses.
 //!
-//! Spawns a child process under an unprivileged uid. Optional `--deny` and
-//! `--allow-rw` paths get chowned/chmodded so the kernel's permission check
-//! enforces the sandbox boundary — no kernel features beyond POSIX needed.
+//! Picks the strongest backend available at runtime:
+//!   - uid switch (any POSIX) when --uid is set and caller is root
+//!   - Landlock (Linux 5.13+) when --allow-ro/--allow-rw are set
+//!   - both layered, when both apply (defense in depth)
+//!
+//! Fails loud if the user requested a guarantee the host can't deliver.
+//! See src/sandbox.zig and src/landlock.zig for the mechanism details.
 
 const std = @import("std");
 
