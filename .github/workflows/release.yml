@@ -28,8 +28,8 @@ jobs:
       - name: Verify tag matches source version
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          zon_ver=$(grep -oE '\.version = "[^"]+"' build.zig.zon | sed 's/.*"\(.*\)"/\1/')
-          src_ver=$(grep -oE 'agent-jail [0-9][^"]*' src/main.zig | awk '{print $2}')
+          zon_ver=$(grep -oE '\.version = "[0-9]+\.[0-9]+\.[0-9]+[^"]*"' build.zig.zon | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^"]*')
+          src_ver=$(grep -oE 'agent-jail [0-9]+\.[0-9]+\.[0-9]+[^ \\]*' src/main.zig | awk '{print $2}')
           echo "tag=$tag zon=$zon_ver src=$src_ver"
           test "$tag" = "$zon_ver" || { echo "build.zig.zon version ($zon_ver) != tag ($tag)"; exit 1; }
           test "$tag" = "$src_ver" || { echo "src/main.zig version ($src_ver) != tag ($tag)"; exit 1; }
