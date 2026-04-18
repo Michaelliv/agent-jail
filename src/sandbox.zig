@@ -11,6 +11,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Args = @import("args.zig");
+const landlock = @import("landlock.zig");
 
 pub const Ids = struct {
     uid: u32,
@@ -23,7 +24,22 @@ pub const Error = error{
     ForkFailed,
     OutOfMemory,
     PathTooLong,
+    SandboxUnavailable,
     Unexpected,
+};
+
+/// What mechanism will actually sandbox the child. Resolved by `pickBackend`
+/// from the Args + runtime capability probe.
+pub const Backend = enum {
+    /// No sandboxing params → just spawn the child as-is.
+    none,
+    /// --uid was set; drop uid/gid via setresuid in the child. Needs root.
+    uid_switch,
+    /// Linux 5.13+ with Landlock LSM enabled. Applies a path-beneath ruleset
+    /// in the child right before exec. Works unprivileged.
+    landlock,
+    /// --uid AND Landlock both requested / available: defense in depth.
+    uid_and_landlock,
 };
 
 // ── Public API ──────────────────────────────────────────────────────
@@ -57,6 +73,31 @@ pub fn applyPermissions(args: Args.Parsed, ids: Ids) Error!void {
         if (switching_uid) try chown(path, ids.uid, ids.gid);
         try chmod(path, 0o700);
     }
+
+    // allow_ro paths: create if missing but leave mode alone — caller may be
+    // pointing at system dirs like /usr or /lib that shouldn't be chmod'd.
+    // Just verify existence.
+    for (args.allow_ro) |path| {
+        if (pathExists(path)) continue;
+        // If it doesn't exist, that's a config error — but not ours to create.
+        return error.FileNotFound;
+    }
+}
+
+/// Decide which backend(s) apply given the CLI args and host capabilities.
+/// Call AFTER applyPermissions (which is cheap + harmless for all backends).
+pub fn pickBackend(args: Args.Parsed) Backend {
+    const wants_uid = args.uid != null;
+    const wants_paths = args.allow_rw.len > 0 or args.allow_ro.len > 0;
+
+    if (!wants_uid and !wants_paths) return .none;
+
+    const ll_ok = builtin.os.tag == .linux and landlock.isAvailable();
+
+    if (wants_uid and ll_ok and wants_paths) return .uid_and_landlock;
+    if (wants_uid) return .uid_switch;
+    if (ll_ok) return .landlock;
+    return .none; // fell through: caller should have errored earlier
 }
 
 /// Fork, set up the sandbox in the child, exec, wait for the child.
@@ -138,6 +179,11 @@ fn childSetup(args: Args.Parsed, ids: Ids, cwdz: ?[*:0]const u8) void {
     _ = c.setpgid(0, 0);
     closeFdsAboveStdio();
 
+    // Apply Landlock BEFORE uid switch: landlock_restrict_self only requires
+    // PR_SET_NO_NEW_PRIVS or CAP_SYS_ADMIN, and we still have caps here if we
+    // started as root. After setuid the effective caps drop anyway.
+    if (builtin.os.tag == .linux) applyLandlockIfRequested(args);
+
     if (args.uid != null) {
         _ = c.setgroups(0, null);
         if (c.setGidAll(ids.gid) != 0) {
@@ -149,6 +195,28 @@ fn childSetup(args: Args.Parsed, ids: Ids, cwdz: ?[*:0]const u8) void {
             c.exit(127);
         }
     }
+}
+
+/// If the user asked for path-based sandboxing (allow-rw/ro) and Landlock
+/// is usable, apply it. Silent skip otherwise — parent has already decided
+/// via pickBackend whether that's acceptable.
+fn applyLandlockIfRequested(args: Args.Parsed) void {
+    if (builtin.os.tag != .linux) return;
+    if (args.allow_rw.len == 0 and args.allow_ro.len == 0) return;
+    if (!landlock.isAvailable()) return;
+
+    landlock.apply(.{
+        .allow_rw = args.allow_rw,
+        .allow_ro = args.allow_ro,
+    }) catch |err| {
+        // Landlock failure is fatal in the child — the caller asked for
+        // isolation and we couldn't deliver it. Better to error than ship a
+        // false sense of security.
+        var msg_buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "uidjail: landlock failed: {s}\n", .{@errorName(err)}) catch "uidjail: landlock failed\n";
+        writeStderr(msg);
+        c.exit(127);
+    };
 }
 
 /// Close every FD >= 3. Uses Linux's `close_range(3, ~0, 0)` syscall if
@@ -297,6 +365,12 @@ fn errnoToError() Error {
     };
 }
 
+fn pathExists(path: []const u8) bool {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const z = std.fmt.bufPrintZ(&buf, "{s}", .{path}) catch return false;
+    return c.access(z.ptr, 0) == 0; // F_OK = 0
+}
+
 /// Is the given path a symlink? Checked via readlink(2): returns the link
 /// target if it is a symlink, fails with EINVAL if not. Avoids the per-
 /// platform `struct stat` layout mess.
@@ -359,6 +433,7 @@ const c = struct {
     extern "c" fn chdir(path: [*:0]const u8) c_int;
     extern "c" fn mkdir(path: [*:0]const u8, mode: u16) c_int;
     extern "c" fn readlink(path: [*:0]const u8, buf: [*]u8, bufsiz: usize) isize;
+    pub extern "c" fn access(path: [*:0]const u8, mode: c_int) c_int;
 
     // FDs + I/O.
     extern "c" fn close(fd: c_int) c_int;

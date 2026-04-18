@@ -18,13 +18,15 @@ pub const Parsed = struct {
     gid: ?u32 = null,
     deny: []const []const u8 = &.{},
     allow_rw: []const []const u8 = &.{},
+    allow_ro: []const []const u8 = &.{},
     cwd: ?[]const u8 = null,
     command: []const []const u8 = &.{},
 };
 
 pub fn parse(arena: Allocator, argv: []const [:0]const u8) Error!Parsed {
     var deny: std.ArrayList([]const u8) = .empty;
-    var allow: std.ArrayList([]const u8) = .empty;
+    var allow_rw: std.ArrayList([]const u8) = .empty;
+    var allow_ro: std.ArrayList([]const u8) = .empty;
 
     var uid: ?u32 = null;
     var gid: ?u32 = null;
@@ -54,7 +56,9 @@ pub fn parse(arena: Allocator, argv: []const [:0]const u8) Error!Parsed {
         } else if (mem.eql(u8, arg, "--deny")) {
             try deny.append(arena, try takeValue(argv, &i));
         } else if (mem.eql(u8, arg, "--allow-rw")) {
-            try allow.append(arena, try takeValue(argv, &i));
+            try allow_rw.append(arena, try takeValue(argv, &i));
+        } else if (mem.eql(u8, arg, "--allow-ro")) {
+            try allow_ro.append(arena, try takeValue(argv, &i));
         } else if (mem.eql(u8, arg, "--cwd")) {
             cwd = try takeValue(argv, &i);
         } else {
@@ -66,7 +70,8 @@ pub fn parse(arena: Allocator, argv: []const [:0]const u8) Error!Parsed {
         .uid = uid,
         .gid = gid,
         .deny = deny.items,
-        .allow_rw = allow.items,
+        .allow_rw = allow_rw.items,
+        .allow_ro = allow_ro.items,
         .cwd = cwd,
         .command = command,
     };

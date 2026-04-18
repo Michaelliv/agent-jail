@@ -2,10 +2,15 @@
 
 A portable filesystem sandbox for spawning untrusted subprocesses.
 
-uidjail uses POSIX uid and filesystem permissions — and only those. It works
-identically on macOS, Linux, bare metal, Docker, rootless Docker, Render, Fly,
-and anywhere else a UNIX kernel runs. No capabilities, no kernel features, no
-runtime detection.
+One static binary, ~215 KB, no runtime dependencies. Picks the strongest
+isolation mechanism available at runtime and fails loud when the requested
+guarantee can't be delivered.
+
+| Backend | When | What it does |
+|---|---|---|
+| **uid switch** | `--uid N` and caller is root | `setresuid` / `setresgid` to the sandbox uid after dropping supplementary groups; POSIX permission check enforces the boundary. Strongest. Works on any UNIX kernel. |
+| **Landlock** | `--allow-ro` / `--allow-rw` on Linux 5.13+ | Applies a Landlock ruleset with path-beneath rules before exec. Works unprivileged — no root, no caps, no `--privileged` container flag. |
+| **Defense in depth** | `--uid` + `--allow-*` on Linux with Landlock | Both layers active: kernel enforces uid AND path restrictions. |
 
 ## What it does
 

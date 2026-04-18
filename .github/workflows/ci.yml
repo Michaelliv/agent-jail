@@ -35,6 +35,10 @@ jobs:
       - name: harder.sh (unprivileged)
         run: ./tests/harder.sh
 
+      - name: landlock.sh (Linux only; skips if kernel lacks Landlock)
+        if: matrix.os == 'ubuntu-latest'
+        run: ./tests/landlock.sh
+
       - name: security.sh (root) — Linux only
         if: matrix.os == 'ubuntu-latest'
         run: sudo UIDJAIL_BIN=./zig-out/bin/uidjail ./tests/security.sh

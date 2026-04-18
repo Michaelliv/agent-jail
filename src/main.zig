@@ -47,6 +47,22 @@ pub fn main(init: std.process.Init) !u8 {
         return 2;
     }
 
+    // Fail loud if the user asked for Landlock-backed isolation but the
+    // kernel can't deliver it. (--uid alone works anywhere without a
+    // backend probe; the setuid syscall itself surfaces permission errors.)
+    const wants_landlock = parsed.allow_ro.len > 0;
+    const backend = sandbox.pickBackend(parsed);
+    if (wants_landlock and backend != .landlock and backend != .uid_and_landlock) {
+        try stderr.writeAll(
+            \\uidjail: --allow-ro requires Landlock (Linux 5.13+ with
+            \\  CONFIG_SECURITY_LANDLOCK=y and 'landlock' in the LSM list).
+            \\  Host lacks support. Refusing to run without it.
+            \\
+        );
+        try stderr.flush();
+        return 1;
+    }
+
     const ids: sandbox.Ids = .{
         .uid = parsed.uid orelse 0,
         .gid = parsed.gid orelse parsed.uid orelse 0,
@@ -67,19 +83,25 @@ pub fn main(init: std.process.Init) !u8 {
 
 fn printUsage(w: *std.Io.Writer) !void {
     try w.writeAll(
-        \\uidjail — portable filesystem sandbox via POSIX uid + permissions
+        \\uidjail — portable filesystem sandbox for spawning untrusted subprocesses
         \\
         \\Usage:
         \\  uidjail [options] -- COMMAND [ARGS...]
         \\
         \\Options:
-        \\  --uid N                Sandbox uid (required)
-        \\  --gid N                Sandbox gid (defaults to uid)
-        \\  --deny PATH            Path the sandboxed process must not access
-        \\  --allow-rw PATH        Path the sandboxed process can read+write
+        \\  --uid N                Drop to this uid before exec (needs root)
+        \\  --gid N                Drop to this gid (defaults to --uid)
+        \\  --deny PATH            chmod 0700 this path (uid-switch mode only)
+        \\  --allow-rw PATH        Sandbox may read+write under PATH
+        \\  --allow-ro PATH        Sandbox may read+execute under PATH
         \\  --cwd PATH             Working directory for the child
         \\  -h, --help             Show this help
         \\  -V, --version          Show version
+        \\
+        \\Backends (auto-selected):
+        \\  --uid + --allow-*     → uid switch + Landlock (Linux, defense in depth)
+        \\  --uid                 → uid switch (any POSIX)
+        \\  --allow-*             → Landlock (Linux 5.13+, unprivileged)
         \\
     );
     try w.flush();
