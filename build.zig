@@ -16,6 +16,22 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    // Deterministic syscall prober used by the shell test suite. Built
+    // alongside agent-jail so `zig build` produces both binaries, and
+    // `zig build probe` builds just the probe.
+    const probe = b.addExecutable(.{
+        .name = "probe",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/probe/probe.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    b.installArtifact(probe);
+    const probe_step = b.step("probe", "Build the test probe binary");
+    probe_step.dependOn(&b.addInstallArtifact(probe, .{}).step);
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);

@@ -29,6 +29,9 @@ jobs:
       - name: integration.sh
         run: ./tests/integration.sh
 
+      - name: probe.sh (deterministic syscall assertions)
+        run: ./tests/probe.sh
+
       - name: security.sh (unprivileged)
         run: ./tests/security.sh
 
@@ -57,6 +60,10 @@ jobs:
       - name: harder.sh (root) — Linux only
         if: matrix.os == 'ubuntu-latest'
         run: sudo AGENT_JAIL_BIN=./zig-out/bin/agent-jail ./tests/harder.sh
+
+      - name: probe.sh (root) — Linux only
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo AGENT_JAIL_BIN=./zig-out/bin/agent-jail PROBE_BIN=./zig-out/bin/probe ./tests/probe.sh
 
   cross-compile:
     runs-on: ubuntu-latest
