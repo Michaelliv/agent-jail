@@ -2,7 +2,7 @@
 
 // Resolve the platform-specific package that npm installed via
 // optionalDependencies. One of four siblings ships the actual binary;
-// the other three are silently skipped by npm's os/cpu gating.
+// the others are skipped by npm's os/cpu gating.
 
 const { platform, arch } = process;
 
@@ -26,11 +26,11 @@ if (!pkg) {
 let binaryPath;
 try {
   binaryPath = require.resolve(`${pkg}/bin/agent-jail`);
-} catch (err) {
+} catch {
   throw new Error(
     `agent-jail: could not locate ${pkg}/bin/agent-jail. ` +
-      `npm may have skipped the optional dependency \u2014 reinstall with ` +
-      `\`npm install agent-jail\` and ensure --no-optional was not set.`,
+      "npm may have skipped the optional dependency — reinstall with " +
+      "`npm install agent-jail` and ensure --no-optional was not set.",
   );
 }
 
