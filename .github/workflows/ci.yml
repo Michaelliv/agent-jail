@@ -39,6 +39,10 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: ./tests/landlock.sh
 
+      - name: pidns.sh (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: ./tests/pidns.sh
+
       - name: security.sh (root) — Linux only
         if: matrix.os == 'ubuntu-latest'
         run: sudo AGENT_JAIL_BIN=./zig-out/bin/agent-jail ./tests/security.sh

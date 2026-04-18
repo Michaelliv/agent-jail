@@ -48,15 +48,17 @@ Plus one shorthand and some operational knobs:
 | `-h, --help` | Show help. |
 | `-V, --version` | Show version. |
 
-## The backends
+## The layers
 
-agent-jail picks from three at runtime based on host support and flags.
+agent-jail composes up to three layers in one child, picked at runtime
+from host support and flags.
 
-| Backend | When it's used | What it does |
+| Layer | When it's used | What it does |
 |---|---|---|
 | **uid switch** | `--uid N` and caller is root | `setgroups(0)` / `setresgid` / `setresuid` in the child before exec; POSIX permission check enforces the boundary. Works on any UNIX kernel. |
 | **Landlock** | `--rw` / `--ro` / `--system-ro` on Linux 5.13+ with the LSM enabled | Kernel-enforced path-beneath rules applied in the child before exec. Works **unprivileged** — no root, no caps, no `--privileged` container flag. The only mechanism that works on Render, Fly, and other managed platforms. |
-| **Defense in depth** | `--uid` + `--rw`/`--ro` on Linux with Landlock | Both layers active in the same child: kernel enforces uid drop AND path restrictions. |
+| **PID namespace** | Any sandboxing flags on Linux with unprivileged user namespaces enabled (default on most distros + container runtimes) | Double-fork through `unshare(CLONE_NEWUSER \| CLONE_NEWNS \| CLONE_NEWPID)` so the child runs as PID 1 in a fresh PID namespace. The child's `/proc` only shows its own subtree, and `kill(2)` can only reach processes it itself spawned — sibling agents and the host are invisible and unreachable. |
+| **Defense in depth** | All of the above on Linux with Landlock + user namespaces | Every layer active in the same child: kernel enforces uid drop AND path restrictions AND PID-namespace confinement. |
 
 ### Strict vs. best-effort
 
@@ -68,10 +70,10 @@ out when a kernel update drops Landlock.
 
 ## What it doesn't do
 
-agent-jail covers one thing: **a spawned subprocess reading or writing
-files it shouldn't.** It explicitly does NOT:
+agent-jail covers two things: **a spawned subprocess reading or writing
+files it shouldn't**, and **a spawned subprocess signalling or observing
+processes outside its own subtree** (Linux). It explicitly does NOT:
 
-- Isolate PIDs (use `unshare -p` or a container for that)
 - Isolate networking (use iptables, nftables, or `unshare -n`)
 - Limit resources (use cgroups or ulimit)
 - Filter syscalls (use seccomp)
@@ -135,10 +137,11 @@ No assumptions about kernel version or container runtime.
 
 ```
 zig build test                              # unit (Zig)
-./tests/integration.sh                      # 14 end-to-end
+./tests/integration.sh                      # 13 end-to-end
 ./tests/security.sh                         # 27 probes (4 root-only)
 ./tests/harder.sh                           # 18 adversarial (4 root-only)
 ./tests/landlock.sh                         # 11 Landlock-backend probes
+./tests/pidns.sh                            # 4 PID-namespace probes (Linux only)
 
 # Root-only probes (prove the sandbox actually isolates):
 sudo ./tests/security.sh

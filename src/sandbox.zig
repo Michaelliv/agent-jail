@@ -1,10 +1,13 @@
 //! Sandboxing core: permission setup + spawn with backend dispatch.
 //!
-//! Two backends, either or both may apply per call:
+//! Three layers, any combination may apply per call:
 //!   - uid switch: chown/chmod hide+rw paths, then in the child call
 //!     setgroups(0)/setresgid/setresuid before exec. POSIX, any UNIX.
 //!   - Landlock: in the child, apply a landlock ruleset with path-beneath
 //!     rules right before exec. Linux 5.13+, unprivileged.
+//!   - PID namespace: on Linux, layer a fresh user+mount+PID namespace via
+//!     a double-fork so the child's view of `/proc` and reach of `kill(2)`
+//!     stops at its own subtree. See pidns.zig.
 //!
 //! Child-side setup runs between a manual fork and execvp: chdir, new
 //! process group, close all non-stdio FDs, Landlock (if requested),
@@ -16,6 +19,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Args = @import("args.zig");
 const landlock = @import("landlock.zig");
+const pidns = @import("pidns.zig");
 
 pub const Ids = struct {
     uid: u32,
@@ -33,6 +37,10 @@ pub const Error = error{
 
 /// What mechanism will actually sandbox the child. Resolved by `pickBackend`
 /// from the Args + runtime capability probe.
+///
+/// Orthogonal to this: PID-namespace isolation is layered on automatically
+/// on Linux whenever any sandbox params are present and unprivileged user
+/// namespaces are permitted. See `Plan.pid_isolation`.
 pub const Backend = enum {
     /// No sandboxing params → just spawn the child as-is.
     none,
@@ -43,6 +51,14 @@ pub const Backend = enum {
     landlock,
     /// --uid AND Landlock both requested / available: defense in depth.
     uid_and_landlock,
+};
+
+/// Resolved sandboxing plan: the filesystem/identity backend plus whether
+/// to also enter a fresh PID namespace. PID-ns is layered on top of any
+/// other backend; it confines `kill` and `/proc` to the agent's own subtree.
+pub const Plan = struct {
+    backend: Backend,
+    pid_isolation: bool,
 };
 
 // ── Public API ──────────────────────────────────────────────────────
@@ -111,6 +127,16 @@ pub fn pickBackend(args: Args.Parsed) Backend {
     return .none;
 }
 
+/// Full plan: filesystem/identity backend plus whether to enter a PID
+/// namespace. PID-ns activates whenever the user asked for any sandboxing
+/// (--rw/--ro/--uid) on Linux. The actual unshare may still fail at
+/// child-setup time on hardened distros; --best-effort handles that.
+pub fn pickPlan(args: Args.Parsed) Plan {
+    const backend = pickBackend(args);
+    const pid_isolation = backend != .none and pidns.isAvailable();
+    return .{ .backend = backend, .pid_isolation = pid_isolation };
+}
+
 /// Fork, set up the sandbox in the child, exec, wait for the child.
 /// Returns the child's exit code, 128+signal if signalled, or 127 on exec
 /// failure.
@@ -118,9 +144,15 @@ pub fn pickBackend(args: Args.Parsed) Backend {
 /// TERM/INT/HUP/QUIT received by the parent are forwarded to the child's
 /// process group, so killing agent-jail reaps the whole tree.
 ///
+/// When `plan.pid_isolation` is set, the structure is parent → intermediate
+/// → real child: the intermediate enters a fresh user+mount+PID namespace
+/// and forks again so the grandchild is PID 1 in the new namespace. The
+/// intermediate is a thin shim that waits on the grandchild and re-exits
+/// with its status.
+///
 /// Not safe to call from multiple threads: signal forwarding uses a
 /// process-global slot.
-pub fn spawnAndWait(gpa: std.mem.Allocator, args: Args.Parsed, ids: Ids) Error!u8 {
+pub fn spawnAndWait(gpa: std.mem.Allocator, args: Args.Parsed, ids: Ids, plan: Plan) Error!u8 {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -143,12 +175,15 @@ pub fn spawnAndWait(gpa: std.mem.Allocator, args: Args.Parsed, ids: Ids) Error!u
     if (pid < 0) return error.ForkFailed;
 
     if (pid == 0) {
-        // ── child ──────────────────────────────────────────────────
-        childSetup(args, ids, cwdz);
-        _ = c.execvp(argvz[0].?, argvz.ptr);
-        // execvp only returns on failure.
-        writeStderr("agent-jail: exec failed\n");
-        c.exit(127);
+        // ── outer child ────────────────────────────────────────────
+        if (plan.pid_isolation) {
+            runIntermediate(args, ids, cwdz, argvz);
+        } else {
+            childSetup(args, ids, cwdz);
+            _ = c.execvp(argvz[0].?, argvz.ptr);
+            writeStderr("agent-jail: exec failed\n");
+            c.exit(127);
+        }
     }
 
     // ── parent ────────────────────────────────────────────────────
@@ -168,6 +203,72 @@ pub fn spawnAndWait(gpa: std.mem.Allocator, args: Args.Parsed, ids: Ids) Error!u
     if (wifexited(status)) return @intCast(wexitstatus(status));
     if (wifsignaled(status)) return 128 + @as(u8, @intCast(wtermsig(status) & 0x7f));
     return 1;
+}
+
+/// Intermediate process for PID-namespace isolation.
+///
+/// CLONE_NEWPID semantics: unshare() doesn't move the calling process into
+/// the new PID namespace; it makes the *next* fork land there as PID 1. So
+/// the intermediate enters the namespace, forks the real child, then waits
+/// and re-exits with the child's status.
+///
+/// If unshare fails and --best-effort is set, fall through to a normal
+/// (non-PID-isolated) child setup. Without --best-effort, abort.
+fn runIntermediate(
+    args: Args.Parsed,
+    ids: Ids,
+    cwdz: ?[*:0]const u8,
+    argvz: []?[*:0]const u8,
+) noreturn {
+    pidns.enter() catch |err| {
+        if (args.best_effort) {
+            writeStderr("agent-jail: warning: PID-namespace isolation unavailable; continuing without it\n");
+            childSetup(args, ids, cwdz);
+            _ = c.execvp(argvz[0].?, argvz.ptr);
+            writeStderr("agent-jail: exec failed\n");
+            c.exit(127);
+        }
+        var msg_buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "agent-jail: pidns.enter failed: {s}\n", .{@errorName(err)}) catch "agent-jail: pidns.enter failed\n";
+        writeStderr(msg);
+        c.exit(1);
+    };
+
+    const inner = c.fork();
+    if (inner < 0) {
+        writeStderr("agent-jail: inner fork failed\n");
+        c.exit(1);
+    }
+
+    if (inner == 0) {
+        // ── grandchild ── PID 1 in the new namespace ──────────────
+        childSetup(args, ids, cwdz);
+        _ = c.execvp(argvz[0].?, argvz.ptr);
+        writeStderr("agent-jail: exec failed\n");
+        c.exit(127);
+    }
+
+    // Intermediate: wait for the grandchild and propagate its status. We
+    // act as the namespace's init equivalent for status reporting; if we
+    // died first the grandchild would still be reaped by the kernel (PID 1
+    // death → namespace teardown), but the parent would lose the exit code.
+    var status: c_int = 0;
+    while (true) {
+        const rc = c.waitpid(inner, &status, 0);
+        if (rc == -1) {
+            if (c.lastErrno() == .INTR) continue;
+            c.exit(1);
+        }
+        break;
+    }
+    if (wifexited(status)) c.exit(@intCast(wexitstatus(status)));
+    if (wifsignaled(status)) {
+        // Re-raise the signal so the outer parent sees "died by signal"
+        // semantics and reports 128+sig accordingly.
+        const sig = wtermsig(status);
+        _ = c.kill(c.getpid(), sig);
+    }
+    c.exit(1);
 }
 
 // ── Child setup ─────────────────────────────────────────────────────
@@ -400,6 +501,8 @@ const c = struct {
     extern "c" fn execvp(file: [*:0]const u8, argv: [*]const ?[*:0]const u8) c_int;
     extern "c" fn waitpid(pid: std.c.pid_t, status: *c_int, opts: c_int) std.c.pid_t;
     extern "c" fn exit(status: c_int) noreturn;
+    extern "c" fn getpid() std.c.pid_t;
+    pub extern "c" fn kill(pid: std.c.pid_t, sig: c_int) c_int;
 
     // Identity.
     extern "c" fn getuid() u32;

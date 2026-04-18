@@ -1,7 +1,8 @@
 //! agent-jail — portable filesystem sandbox for spawning untrusted subprocesses.
 //!
-//! Picks the strongest backend available at runtime: uid switch on any
-//! POSIX host with root, Landlock on Linux 5.13+, or both layered.
+//! Picks the strongest layers available at runtime: uid switch on any POSIX
+//! host with root, Landlock on Linux 5.13+, and a fresh PID namespace on
+//! Linux with unprivileged user namespaces enabled. Layers compose.
 //!
 //! Fail-loud by default: if a requested guarantee can't be delivered, we
 //! refuse to run. --best-effort degrades to a stderr warning instead.
@@ -32,7 +33,7 @@ pub fn main(init: std.process.Init) !u8 {
             return 0;
         },
         error.VersionRequested => {
-            try stdout.writeAll("agent-jail 0.1.1\n");
+            try stdout.writeAll("agent-jail 0.2.0\n");
             try stdout.flush();
             return 0;
         },
@@ -52,8 +53,8 @@ pub fn main(init: std.process.Init) !u8 {
     // --ro requires Landlock. Without --best-effort, refuse to run when
     // it isn't available; with it, warn and continue.
     const wants_landlock = parsed.ro.len > 0;
-    const backend = sandbox.pickBackend(parsed);
-    const have_landlock = backend == .landlock or backend == .uid_and_landlock;
+    const plan = sandbox.pickPlan(parsed);
+    const have_landlock = plan.backend == .landlock or plan.backend == .uid_and_landlock;
     if (wants_landlock and !have_landlock) {
         if (parsed.best_effort) {
             try stderr.writeAll(
@@ -86,7 +87,7 @@ pub fn main(init: std.process.Init) !u8 {
         return 1;
     };
 
-    return sandbox.spawnAndWait(init.gpa, parsed, ids) catch |err| {
+    return sandbox.spawnAndWait(init.gpa, parsed, ids, plan) catch |err| {
         try stderr.print("agent-jail: spawn failed: {s}\n", .{@errorName(err)});
         try stderr.flush();
         return 1;
@@ -125,10 +126,12 @@ fn printUsage(w: *std.Io.Writer) !void {
         \\  -h, --help             Show this help.
         \\  -V, --version          Show version.
         \\
-        \\Backends are picked at runtime:
-        \\  uid switch      any POSIX host where agent-jail runs as root
+        \\Layers picked automatically at runtime (any combination):
+        \\  uid switch      POSIX host where agent-jail runs as root
         \\  Landlock        Linux 5.13+ with the Landlock LSM enabled
-        \\  both            Linux root + Landlock (defense in depth)
+        \\  PID namespace   Linux with unprivileged user namespaces enabled;
+        \\                  child sees only its own subtree in /proc and
+        \\                  can only signal processes it itself spawned
         \\
         \\Idiomatic single-line invocation (works on every host with --best-effort):
         \\  agent-jail --best-effort --system-ro \\
