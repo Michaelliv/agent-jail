@@ -1,6 +1,6 @@
 //! Sandboxing core: permission setup + spawn with backend dispatch.
 //!
-//! Three layers, any combination may apply per call:
+//! Four layers, any combination may apply per call:
 //!   - uid switch: chown/chmod hide+rw paths, then in the child call
 //!     setgroups(0)/setresgid/setresuid before exec. POSIX, any UNIX.
 //!   - Landlock: in the child, apply a landlock ruleset with path-beneath
@@ -8,6 +8,8 @@
 //!   - PID namespace: on Linux, layer a fresh user+mount+PID namespace via
 //!     a double-fork so the child's view of `/proc` and reach of `kill(2)`
 //!     stops at its own subtree. See pidns.zig.
+//!   - Sandbox kext: on macOS, render an SBPL profile and exec via
+//!     sandbox-exec(1). See darwin.zig.
 //!
 //! Child-side setup runs between a manual fork and execvp: chdir, new
 //! process group, close all non-stdio FDs, Landlock (if requested),
@@ -20,6 +22,7 @@ const builtin = @import("builtin");
 const Args = @import("args.zig");
 const landlock = @import("landlock.zig");
 const pidns = @import("pidns.zig");
+const darwin = @import("darwin.zig");
 
 pub const Ids = struct {
     uid: u32,
@@ -51,6 +54,10 @@ pub const Backend = enum {
     landlock,
     /// --uid AND Landlock both requested / available: defense in depth.
     uid_and_landlock,
+    /// macOS Sandbox kext via sandbox-exec(1). Renders an SBPL profile from
+    /// --rw/--ro/--hide and exec's sandbox-exec instead of the command
+    /// directly. See darwin.zig.
+    sandbox_exec,
 };
 
 /// Resolved sandboxing plan: the filesystem/identity backend plus whether
@@ -133,9 +140,14 @@ pub fn existingRoPaths(arena: std.mem.Allocator, ro: []const []const u8) ![]cons
 /// Decide which backend(s) apply given the CLI args and host capabilities.
 pub fn pickBackend(args: Args.Parsed) Backend {
     const wants_uid = args.uid != null;
-    const wants_paths = args.rw.len > 0 or args.ro.len > 0;
+    const wants_paths = args.rw.len > 0 or args.ro.len > 0 or args.hide.len > 0;
 
     if (!wants_uid and !wants_paths) return .none;
+
+    // macOS: any path verb routes through sandbox-exec. uid is layered
+    // separately in childSetup, so --uid + paths still works — the kernel
+    // sees both the SBPL profile and the dropped uid.
+    if (darwin.isAvailable() and wants_paths) return .sandbox_exec;
 
     const ll_ok = builtin.os.tag == .linux and landlock.isAvailable();
 
@@ -177,13 +189,21 @@ pub fn spawnAndWait(gpa: std.mem.Allocator, args: Args.Parsed, ids: Ids, plan: P
     defer arena_state.deinit();
     const arena = arena_state.allocator();
 
-    const argvz = arena.alloc(?[*:0]const u8, args.command.len + 1) catch return error.OutOfMemory;
-    for (args.command, 0..) |s, i| {
+    // Build argv. For sandbox-exec, prepend ["sandbox-exec", "-p", profile]
+    // so the spawn target becomes sandbox-exec itself, which then re-execs
+    // the real command under the rendered profile.
+    const exec_argv = if (plan.backend == .sandbox_exec)
+        try buildSandboxExecArgv(arena, args)
+    else
+        args.command;
+
+    const argvz = arena.alloc(?[*:0]const u8, exec_argv.len + 1) catch return error.OutOfMemory;
+    for (exec_argv, 0..) |s, i| {
         const z = arena.allocSentinel(u8, s.len, 0) catch return error.OutOfMemory;
         @memcpy(z, s);
         argvz[i] = z.ptr;
     }
-    argvz[args.command.len] = null;
+    argvz[exec_argv.len] = null;
 
     var cwdz_buf: [std.fs.max_path_bytes]u8 = undefined;
     const cwdz: ?[*:0]const u8 = if (args.cwd) |p| blk: {
@@ -223,6 +243,25 @@ pub fn spawnAndWait(gpa: std.mem.Allocator, args: Args.Parsed, ids: Ids, plan: P
     if (wifexited(status)) return @intCast(wexitstatus(status));
     if (wifsignaled(status)) return 128 + @as(u8, @intCast(wtermsig(status) & 0x7f));
     return 1;
+}
+
+fn buildSandboxExecArgv(arena: std.mem.Allocator, args: Args.Parsed) Error![]const []const u8 {
+    const profile = darwin.renderProfile(arena, .{
+        .rw = args.rw,
+        .ro = args.ro,
+        .hide = args.hide,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.PathTooLong => return error.PathTooLong,
+    };
+
+    // [sandbox-exec, -p, <profile>, <command...>]
+    var out = arena.alloc([]const u8, 3 + args.command.len) catch return error.OutOfMemory;
+    out[0] = "sandbox-exec";
+    out[1] = "-p";
+    out[2] = profile;
+    for (args.command, 0..) |s, i| out[3 + i] = s;
+    return out;
 }
 
 /// Intermediate process for PID-namespace isolation.

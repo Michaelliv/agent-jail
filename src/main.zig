@@ -1,8 +1,9 @@
 //! agent-jail — portable filesystem sandbox for spawning untrusted subprocesses.
 //!
 //! Picks the strongest layers available at runtime: uid switch on any POSIX
-//! host with root, Landlock on Linux 5.13+, and a fresh PID namespace on
-//! Linux with unprivileged user namespaces enabled. Layers compose.
+//! host with root, Landlock on Linux 5.13+, a fresh PID namespace on Linux
+//! with unprivileged user namespaces enabled, and the macOS Sandbox kext
+//! via sandbox-exec on Darwin. Layers compose.
 //!
 //! Fail-loud by default: if a requested guarantee can't be delivered, we
 //! refuse to run. --best-effort degrades to a stderr warning instead.
@@ -33,7 +34,7 @@ pub fn main(init: std.process.Init) !u8 {
             return 0;
         },
         error.VersionRequested => {
-            try stdout.writeAll("agent-jail 0.2.0\n");
+            try stdout.writeAll("agent-jail 0.3.0\n");
             try stdout.flush();
             return 0;
         },
@@ -50,25 +51,28 @@ pub fn main(init: std.process.Init) !u8 {
         return 2;
     }
 
-    // --ro requires Landlock. Without --best-effort, refuse to run when
-    // it isn't available; with it, warn and continue.
-    const wants_landlock = parsed.ro.len > 0;
+    // --ro is enforced by Landlock (Linux) or the macOS Sandbox kext.
+    // Without one of those, the kernel can't honor the read-only contract;
+    // refuse to run unless --best-effort.
+    const wants_ro = parsed.ro.len > 0;
     const plan = sandbox.pickPlan(parsed);
-    const have_landlock = plan.backend == .landlock or plan.backend == .uid_and_landlock;
-    if (wants_landlock and !have_landlock) {
+    const ro_enforced = switch (plan.backend) {
+        .landlock, .uid_and_landlock, .sandbox_exec => true,
+        .none, .uid_switch => false,
+    };
+    if (wants_ro and !ro_enforced) {
         if (parsed.best_effort) {
             try stderr.writeAll(
-                \\agent-jail: warning: Landlock unavailable on this host;
-                \\  --ro/--system-ro paths will not be enforced. Continuing
-                \\  under --best-effort with remaining layers (if any).
+                \\agent-jail: warning: no kernel mechanism available to enforce
+                \\  --ro/--system-ro on this host. Continuing under --best-effort.
                 \\
             );
             try stderr.flush();
         } else {
             try stderr.writeAll(
-                \\agent-jail: --ro requires Landlock (Linux 5.13+ with
-                \\  CONFIG_SECURITY_LANDLOCK=y and 'landlock' in the LSM list).
-                \\  Host lacks support. Pass --best-effort to proceed without it.
+                \\agent-jail: --ro needs Landlock (Linux 5.13+) or the macOS
+                \\  Sandbox kext. Host lacks both. Pass --best-effort to proceed
+                \\  without enforcement.
                 \\
             );
             try stderr.flush();
@@ -132,6 +136,8 @@ fn printUsage(w: *std.Io.Writer) !void {
         \\  PID namespace   Linux with unprivileged user namespaces enabled;
         \\                  child sees only its own subtree in /proc and
         \\                  can only signal processes it itself spawned
+        \\  Sandbox kext    macOS via sandbox-exec(1); --rw/--ro/--hide are
+        \\                  rendered into an SBPL profile the kernel enforces
         \\
         \\Idiomatic single-line invocation (works on every host with --best-effort):
         \\  agent-jail --best-effort --system-ro \\

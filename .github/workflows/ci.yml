@@ -43,6 +43,10 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: ./tests/pidns.sh
 
+      - name: darwin.sh (macOS only)
+        if: matrix.os == 'macos-latest'
+        run: ./tests/darwin.sh
+
       - name: security.sh (root) — Linux only
         if: matrix.os == 'ubuntu-latest'
         run: sudo AGENT_JAIL_BIN=./zig-out/bin/agent-jail ./tests/security.sh
