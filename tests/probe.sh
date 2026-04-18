@@ -21,6 +21,13 @@ source "$DIR/lib.sh"
 PROBE="${PROBE_BIN:-./zig-out/bin/probe}"
 [[ -x "$PROBE" ]] || { echo "probe binary missing at $PROBE — run 'zig build'" >&2; exit 1; }
 
+# Landlock's default-deny needs read+exec on the probe binary itself or
+# the child can't exec it — every test would silently return EACCES and
+# the positive assertions ("read inside --rw should succeed") would fail.
+# Resolve to a canonical directory to cover symlinks (e.g. /tmp→/private/tmp).
+PROBE_ABS=$(cd "$(dirname "$PROBE")" && pwd)/$(basename "$PROBE")
+PROBE_DIR=$(dirname "$PROBE_ABS")
+
 TMP=$(mktemp -d)
 chmod 0755 "$TMP"
 trap 'rm -rf "$TMP" 2>/dev/null' EXIT
@@ -67,6 +74,10 @@ echo
 # Run `probe VERB ARG...` inside agent-jail with the given sandbox flags.
 # Usage:  run_probe <aj-flags...> -- <probe-verb> [probe-arg...]
 # Returns the probe's exit code.
+#
+# Every invocation gets --system-ro (for libc / ld.so on Linux) and --ro
+# PROBE_DIR (so Landlock lets the child exec the probe itself). Without
+# the latter, every test silently fails with EACCES on exec.
 run_probe() {
   local aj_args=()
   while [[ $# -gt 0 && "$1" != "--" ]]; do
@@ -74,7 +85,7 @@ run_probe() {
     shift
   done
   [[ "${1:-}" == "--" ]] && shift
-  "$BIN" $(landlock_system_ro) "${aj_args[@]}" -- "$PROBE" "$@" 2>/dev/null
+  "$BIN" --best-effort $(landlock_system_ro) --ro "$PROBE_DIR" "${aj_args[@]}" -- "$PROBE_ABS" "$@" 2>/dev/null
 }
 
 # Assert: running the probe verb inside the given sandbox exits with $expected.
@@ -194,7 +205,7 @@ test_uid_actually_drops() {
   local uid; uid=$(pick_unpriv_uid)
   rm -rf "$TMP/wsp" && mkdir -p "$TMP/wsp"
   chown "$uid:$uid" "$TMP/wsp" 2>/dev/null || true
-  out=$("$BIN" $(landlock_system_ro) --uid "$uid" --rw "$TMP/wsp" -- "$PROBE" uid 2>/dev/null)
+  out=$("$BIN" --best-effort $(landlock_system_ro) --ro "$PROBE_DIR" --uid "$uid" --rw "$TMP/wsp" -- "$PROBE_ABS" uid 2>/dev/null)
   [[ "$out" == "$uid" ]] && ok "uid=$uid in child" || fail "got '$out'"
 }
 
@@ -205,6 +216,7 @@ test_setuid_back_to_root_fails() {
   rm -rf "$TMP/wsp" && mkdir -p "$TMP/wsp"
   chown "$uid:$uid" "$TMP/wsp" 2>/dev/null || true
   run_probe --uid "$uid" --rw "$TMP/wsp" -- setuid 0
+  # (note: run_probe already passes --best-effort + system-ro + probe dir)
   local rc=$?
   [[ $rc -eq $EX_EPERM ]] && ok "setuid(0) → EPERM" || fail "expected EPERM, got $rc"
 }
@@ -220,7 +232,7 @@ test_system_ro_grants_etc_read() {
     return
   fi
   rm -rf "$TMP/wsp" && mkdir -p "$TMP/wsp"
-  "$BIN" --system-ro --rw "$TMP/wsp" -- "$PROBE" read /etc/passwd 2>/dev/null
+  "$BIN" --best-effort --system-ro --ro "$PROBE_DIR" --rw "$TMP/wsp" -- "$PROBE_ABS" read /etc/passwd 2>/dev/null
   local rc=$?
   [[ $rc -eq $EX_OK ]] && ok "/etc/passwd readable" || fail "got $rc"
 }
@@ -228,7 +240,7 @@ test_system_ro_grants_etc_read() {
 test_system_ro_blocks_etc_write() {
   echo "--system-ro blocks writes to /etc"
   rm -rf "$TMP/wsp" && mkdir -p "$TMP/wsp"
-  "$BIN" --system-ro --rw "$TMP/wsp" -- "$PROBE" write /etc/agent-jail-probe-should-fail 2>/dev/null
+  "$BIN" --best-effort --system-ro --ro "$PROBE_DIR" --rw "$TMP/wsp" -- "$PROBE_ABS" write /etc/agent-jail-probe-should-fail 2>/dev/null
   local rc=$?
   if [[ $rc -eq $EX_EACCES || $rc -eq $EX_EPERM || $rc -eq $EX_EROFS ]]; then
     ok "/etc write blocked (rc=$rc)"
@@ -248,7 +260,7 @@ test_env_is_passed_through() {
   echo "caller env visible in sandboxed child"
   rm -rf "$TMP/wsp" && mkdir -p "$TMP/wsp"
   out=$(AGENT_JAIL_PROBE_CANARY=xyzzy \
-    "$BIN" $(landlock_system_ro) --rw "$TMP/wsp" -- "$PROBE" env AGENT_JAIL_PROBE_CANARY 2>/dev/null)
+    "$BIN" --best-effort $(landlock_system_ro) --ro "$PROBE_DIR" --rw "$TMP/wsp" -- "$PROBE_ABS" env AGENT_JAIL_PROBE_CANARY 2>/dev/null)
   [[ "$out" == "xyzzy" ]] && ok "env passed through (contract)" || fail "got '$out'"
 }
 
