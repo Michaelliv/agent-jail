@@ -68,6 +68,12 @@ pub const Plan = struct {
 ///
 /// - `hide`: chown to caller, mode 0700 → child uid sees EACCES.
 /// - `rw`:   created if missing, chown to sandbox uid, mode 0700.
+///
+/// Without uid switching, the chmods are not load-bearing (the child runs
+/// as the same uid as the caller, so the kernel's permission check sees
+/// the original mode regardless of what we set). Skip them when we'd be
+/// touching paths we don't own — e.g. `--rw /dev` from an unprivileged
+/// caller — because the chmod would fail loudly with AccessDenied.
 pub fn applyPermissions(args: Args.Parsed, ids: Ids) Error!void {
     // chown(2) requires root even to set a file to its current owner, so
     // skip it entirely when we aren't switching uid.
@@ -78,16 +84,19 @@ pub fn applyPermissions(args: Args.Parsed, ids: Ids) Error!void {
 
     for (args.hide) |path| {
         if (switching_uid) try chownIfExists(path, caller_uid, caller_gid);
-        try chmodIfExists(path, 0o700);
+        if (switching_uid) try chmodIfExists(path, 0o700);
     }
 
     for (args.rw) |path| {
-        try mkdirP(path);
+        const created = try mkdirPCreated(path);
         // Reject symlinks at the top of an rw path: following one would
         // silently retarget the sandbox to the link target.
         if (try isSymlink(path)) return error.AccessDenied;
         if (switching_uid) try chown(path, ids.uid, ids.gid);
-        try chmod(path, 0o700);
+        // Lock down to 0700, but only on paths we just created (and so
+        // own). Pre-existing paths might be root-owned (--rw /dev) or
+        // shared with other tools, where chmod would fail or be wrong.
+        if (switching_uid or created) try chmod(path, 0o700);
     }
 
     // ro paths must already exist; missing is fatal unless --best-effort.
@@ -442,27 +451,38 @@ fn chmodIfExists(path: []const u8, mode: u16) Error!void {
 
 /// Idempotent `mkdir -p`. Each component is created mode 0700; caller
 /// chmods the leaf afterwards, so the mkdir mode is not load-bearing.
-fn mkdirP(path: []const u8) Error!void {
+/// Returns true iff the leaf component was created by this call (i.e.
+/// did not already exist). Intermediate components don't affect the result.
+fn mkdirPCreated(path: []const u8) Error!bool {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     if (path.len == 0 or path.len >= buf.len) return error.PathTooLong;
     @memcpy(buf[0..path.len], path);
     buf[path.len] = 0;
 
+    var leaf_created = false;
     var i: usize = 1; // skip leading '/'
     while (i <= path.len) : (i += 1) {
         if (i == path.len or path[i] == '/') {
+            const is_leaf = i == path.len;
             const saved = buf[i];
             buf[i] = 0;
             const rc = c.mkdir(@ptrCast(&buf), 0o700);
             buf[i] = saved;
-            if (rc != 0) switch (c.lastErrno()) {
+            if (rc == 0) {
+                if (is_leaf) leaf_created = true;
+            } else switch (c.lastErrno()) {
                 .EXIST => {},
                 .NOENT => return error.FileNotFound,
                 .ACCES, .PERM => return error.AccessDenied,
                 else => return error.Unexpected,
-            };
+            }
         }
     }
+    return leaf_created;
+}
+
+fn mkdirP(path: []const u8) Error!void {
+    _ = try mkdirPCreated(path);
 }
 
 fn errnoToError() Error {
