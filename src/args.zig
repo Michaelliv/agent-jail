@@ -1,19 +1,5 @@
-//! CLI argument parsing for agent-jail.
-//!
-//! Three path verbs describe what the sandbox can do with a path:
-//!   --rw PATH     can read and write
-//!   --ro PATH     can read (and execute) only
-//!   --hide PATH   can't touch at all
-//!
-//! Plus:
-//!   --system-ro   shorthand for `--ro` on the standard system dirs
-//!                 (/usr /lib /lib64 /bin /sbin /etc /usr/sbin). Missing
-//!                 paths on a given host are silently skipped.
-//!   --uid N       drop to this uid (needs root)
-//!   --gid N       drop to this gid (defaults to --uid)
-//!   --cwd PATH    working directory for the child
-//!   --best-effort don't fail if a requested protection isn't available
-//!                 on the host; warn on stderr and continue
+//! CLI argument parsing. See `printUsage` in main.zig for the full flag
+//! reference.
 
 const std = @import("std");
 const mem = std.mem;
@@ -28,9 +14,8 @@ pub const Error = error{
     OutOfMemory,
 };
 
-/// Paths the standard `--system-ro` shorthand expands to. Any path that
-/// doesn't exist at apply-time is skipped — this list is a superset of
-/// what Linux distros and macOS put in these locations.
+/// Paths `--system-ro` expands to. Non-existent entries are skipped at
+/// apply-time, so the same list works on Linux, macOS, Alpine, etc.
 pub const SYSTEM_RO_PATHS = [_][]const u8{
     "/usr",
     "/lib",

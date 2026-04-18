@@ -1,15 +1,10 @@
 //! agent-jail — portable filesystem sandbox for spawning untrusted subprocesses.
 //!
-//! Picks the strongest backend available at runtime:
-//!   - uid switch (any POSIX) when --uid is set and caller is root
-//!   - Landlock (Linux 5.13+) when --ro/--rw are set
-//!   - both layered, when both apply (defense in depth)
+//! Picks the strongest backend available at runtime: uid switch on any
+//! POSIX host with root, Landlock on Linux 5.13+, or both layered.
 //!
-//! Default is fail-loud: if the user asks for a guarantee the host can't
-//! deliver (e.g. --ro without Landlock), we refuse to run. Pass
-//! --best-effort to degrade gracefully with a stderr warning instead.
-//!
-//! See src/sandbox.zig and src/landlock.zig for the mechanism details.
+//! Fail-loud by default: if a requested guarantee can't be delivered, we
+//! refuse to run. --best-effort degrades to a stderr warning instead.
 
 const std = @import("std");
 
@@ -54,10 +49,8 @@ pub fn main(init: std.process.Init) !u8 {
         return 2;
     }
 
-    // The user asked for --ro path isolation, which only Landlock can deliver.
-    // If the host can't, behavior depends on --best-effort:
-    //   default: refuse to run (fail loud: you asked for a guarantee we can't give).
-    //   best-effort: warn once on stderr, continue with whatever backend(s) do apply.
+    // --ro requires Landlock. Without --best-effort, refuse to run when
+    // it isn't available; with it, warn and continue.
     const wants_landlock = parsed.ro.len > 0;
     const backend = sandbox.pickBackend(parsed);
     const have_landlock = backend == .landlock or backend == .uid_and_landlock;

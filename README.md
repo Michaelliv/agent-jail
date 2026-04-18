@@ -9,8 +9,8 @@ warns and continues with what the host can do.
 
 ## The one-line invocation
 
-This single command is meant to run everywhere — macOS dev laptop, Linux
-dev box, default Docker container, Render, Fly, Oracle Linux, anything:
+One command, runs everywhere — macOS, Linux, default Docker container,
+managed platforms (Render, Fly), Oracle Linux:
 
 ```
 agent-jail \
@@ -21,11 +21,10 @@ agent-jail \
   -- /app/agent
 ```
 
-agent-jail applies every layer the host supports and prints a one-line
-warning to stderr for every layer it can't. On Linux with Landlock it's
-a kernel-enforced sandbox; on macOS it's a filesystem-setup primitive plus
-a warning; on managed container platforms it's a Landlock sandbox with no
-root required.
+agent-jail applies every layer the host supports and warns on stderr for
+every layer it can't. On Linux with Landlock: a kernel-enforced sandbox.
+On macOS: filesystem setup plus a warning. On managed container platforms:
+a Landlock sandbox with no root required.
 
 ## The flags
 
@@ -51,8 +50,7 @@ Plus one shorthand and some operational knobs:
 
 ## The backends
 
-agent-jail doesn't have one "sandbox" mechanism — it picks from three at
-runtime based on what the host supports and what you asked for.
+agent-jail picks from three at runtime based on host support and flags.
 
 | Backend | When it's used | What it does |
 |---|---|---|
@@ -62,18 +60,11 @@ runtime based on what the host supports and what you asked for.
 
 ### Strict vs. best-effort
 
-By default, if you ask for `--ro /usr` and the host doesn't have Landlock,
-agent-jail refuses to run. That's deliberate: you asked for a guarantee,
-and silently dropping it would ship a false sense of security.
-
-`--best-effort` changes this: agent-jail prints a one-line warning per
-missing layer and continues. Intended for calling code (like vex) that
-wants one invocation to work across every host it might be deployed to
-and is OK with degraded protection on weaker hosts.
-
-When you run with `--best-effort` in production, you should also log
-stderr so the warnings are visible — otherwise you won't notice when a
-kernel update drops Landlock.
+By default, agent-jail refuses to run when a requested guarantee (e.g.
+`--ro` without Landlock) can't be enforced. `--best-effort` prints a
+one-line stderr warning per missing layer and continues with what the
+host can deliver. Capture stderr in production — that's how you find
+out when a kernel update drops Landlock.
 
 ## What it doesn't do
 
@@ -87,9 +78,7 @@ files it shouldn't.** It explicitly does NOT:
 - Sanitize the environment (env vars pass through — sanitize before invoking)
 - Resolve users by name (pass numeric `--uid` / `--gid`)
 
-If you need any of these, layer agent-jail with the right tool for the
-job. agent-jail is the portable filesystem-isolation piece, not the whole
-stack.
+Layer agent-jail with the right tool when you need more.
 
 ## Why not bwrap / firejail / nsjail / sandbox-exec?
 
@@ -104,8 +93,8 @@ Every sandboxing tool depends on a specific kernel mechanism:
 - **POSIX uid + permissions** — universal but requires root.
 
 agent-jail treats these as a dispatch table: the caller states the
-guarantee they want, and agent-jail picks what the host can deliver (or
-errors clearly, or warns under `--best-effort`).
+guarantee they want; agent-jail picks what the host can deliver, errors
+clearly, or warns under `--best-effort`.
 
 ## Install
 
@@ -140,8 +129,7 @@ agent-jail assumes:
   so if you rely only on uid switch, make sure the sandbox can't reach a
   vulnerable setuid binary.
 
-agent-jail does NOT assume any specific kernel version or container
-runtime. Managed platforms all work with the Landlock backend.
+No assumptions about kernel version or container runtime.
 
 ## Tests
 
@@ -158,8 +146,7 @@ sudo ./tests/harder.sh
 sudo ./tests/landlock.sh
 ```
 
-CI runs all suites on macOS and Linux on every push. The Landlock suite
-runs on ubuntu-latest (Landlock enabled) and skips on hosts without it.
+CI runs all suites on macOS and Linux on every push.
 
 ## License
 

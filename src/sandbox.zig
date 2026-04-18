@@ -6,13 +6,11 @@
 //!   - Landlock: in the child, apply a landlock ruleset with path-beneath
 //!     rules right before exec. Linux 5.13+, unprivileged.
 //!
-//! We do our own fork + execvp because std.process.spawn doesn't close
-//! caller-inherited FDs (>= 3) and doesn't drop supplementary groups —
-//! both real security holes for a sandbox tool. Manual fork lets us
-//! control the full child-side setup: chdir, new process group, close all
-//! non-stdio FDs, Landlock (if requested), setgroups(0), setresgid,
-//! setresuid, then exec. The kernel transitions identity and applies the
-//! Landlock domain; the child can never relax either.
+//! Child-side setup runs between a manual fork and execvp: chdir, new
+//! process group, close all non-stdio FDs, Landlock (if requested),
+//! setgroups(0), setresgid, setresuid, then exec. std.process.spawn is
+//! not used because it leaves caller FDs open and keeps supplementary
+//! groups.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -49,17 +47,14 @@ pub const Backend = enum {
 
 // ── Public API ──────────────────────────────────────────────────────
 
-/// Apply chown/chmod to the deny and allow_rw paths so the kernel's permission
+/// Apply chown/chmod to the hide and rw paths so the kernel's permission
 /// check enforces the sandbox boundary for the child.
 ///
-/// - `deny`: chown to caller (typically root), mode 0700 → child uid sees EACCES.
-/// - `allow_rw`: created if missing, chown to sandbox uid, mode 0700 → child uid
-///   has full access; everyone else (including root's supp groups, per file
-///   mode bits) is restricted.
+/// - `hide`: chown to caller, mode 0700 → child uid sees EACCES.
+/// - `rw`:   created if missing, chown to sandbox uid, mode 0700.
 pub fn applyPermissions(args: Args.Parsed, ids: Ids) Error!void {
-    // No uid switch requested → skip chown entirely. chown(2) requires root
-    // even to set a file to its current owner, so calling it unconditionally
-    // would fail in unsandboxed mode.
+    // chown(2) requires root even to set a file to its current owner, so
+    // skip it entirely when we aren't switching uid.
     const switching_uid = args.uid != null;
 
     const caller_uid: u32 = c.getuid();
@@ -72,15 +67,14 @@ pub fn applyPermissions(args: Args.Parsed, ids: Ids) Error!void {
 
     for (args.rw) |path| {
         try mkdirP(path);
-        // Refuse to chmod/chown a symlink: would silently retarget the
-        // sandbox to wherever the link points (e.g. /etc/passwd).
+        // Reject symlinks at the top of an rw path: following one would
+        // silently retarget the sandbox to the link target.
         if (try isSymlink(path)) return error.AccessDenied;
         if (switching_uid) try chown(path, ids.uid, ids.gid);
         try chmod(path, 0o700);
     }
 
-    // ro paths: must already exist (caller shouldn't ask us to create
-    // /usr if missing). Under --best-effort, a missing path is a warning.
+    // ro paths must already exist; missing is fatal unless --best-effort.
     for (args.ro) |path| {
         if (pathExists(path)) continue;
         if (args.best_effort) {
@@ -93,9 +87,9 @@ pub fn applyPermissions(args: Args.Parsed, ids: Ids) Error!void {
     }
 }
 
-/// Return a copy of `ro` with non-existent paths filtered out. Used by the
-/// child before calling landlock.apply, so --system-ro works uniformly on
-/// hosts that don't have /lib64 or /usr/sbin (macOS, Alpine, etc).
+/// Return `ro` with non-existent paths filtered out. landlock_add_rule
+/// fails the whole call on ENOENT, and --system-ro lists paths not
+/// present on every host (e.g. /lib64 on Alpine).
 pub fn existingRoPaths(arena: std.mem.Allocator, ro: []const []const u8) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     for (ro) |p| if (pathExists(p)) try out.append(arena, p);
@@ -103,7 +97,6 @@ pub fn existingRoPaths(arena: std.mem.Allocator, ro: []const []const u8) ![]cons
 }
 
 /// Decide which backend(s) apply given the CLI args and host capabilities.
-/// Call AFTER applyPermissions (which is cheap + harmless for all backends).
 pub fn pickBackend(args: Args.Parsed) Backend {
     const wants_uid = args.uid != null;
     const wants_paths = args.rw.len > 0 or args.ro.len > 0;
@@ -115,19 +108,18 @@ pub fn pickBackend(args: Args.Parsed) Backend {
     if (wants_uid and ll_ok and wants_paths) return .uid_and_landlock;
     if (wants_uid) return .uid_switch;
     if (ll_ok) return .landlock;
-    return .none; // fell through: caller should have errored earlier
+    return .none;
 }
 
 /// Fork, set up the sandbox in the child, exec, wait for the child.
-/// Returns the child's exit code (or 128+signal if it was signalled, or 127
-/// if exec failed).
+/// Returns the child's exit code, 128+signal if signalled, or 127 on exec
+/// failure.
 ///
-/// Signal forwarding: handlers for TERM/INT/HUP/QUIT in the parent relay to
-/// the entire child process group so killing agent-jail reaps the whole tree
-/// rather than orphaning it to init.
+/// TERM/INT/HUP/QUIT received by the parent are forwarded to the child's
+/// process group, so killing agent-jail reaps the whole tree.
 ///
-/// Not safe to call concurrently from multiple threads in the same process —
-/// signal forwarding uses a process-global `child_pid` slot.
+/// Not safe to call from multiple threads: signal forwarding uses a
+/// process-global slot.
 pub fn spawnAndWait(gpa: std.mem.Allocator, args: Args.Parsed, ids: Ids) Error!u8 {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
@@ -197,9 +189,9 @@ fn childSetup(args: Args.Parsed, ids: Ids, cwdz: ?[*:0]const u8) void {
     _ = c.setpgid(0, 0);
     closeFdsAboveStdio();
 
-    // Apply Landlock BEFORE uid switch: landlock_restrict_self only requires
-    // PR_SET_NO_NEW_PRIVS or CAP_SYS_ADMIN, and we still have caps here if we
-    // started as root. After setuid the effective caps drop anyway.
+    // Landlock must be applied before the uid switch: landlock_restrict_self
+    // needs either CAP_SYS_ADMIN or PR_SET_NO_NEW_PRIVS, and effective caps
+    // drop on setuid.
     if (builtin.os.tag == .linux) applyLandlockIfRequested(args);
 
     if (args.uid != null) {
@@ -215,29 +207,23 @@ fn childSetup(args: Args.Parsed, ids: Ids, cwdz: ?[*:0]const u8) void {
     }
 }
 
-/// If the user asked for path-based sandboxing (--rw/--ro) and Landlock
-/// is usable, apply it. Silent skip otherwise — parent has already decided
-/// via pickBackend whether that's acceptable.
+/// Apply Landlock if --rw or --ro were given and the host supports it.
+/// Silent skip otherwise; the parent decided via pickBackend whether that
+/// was acceptable.
 fn applyLandlockIfRequested(args: Args.Parsed) void {
     if (builtin.os.tag != .linux) return;
     if (args.rw.len == 0 and args.ro.len == 0) return;
     if (!landlock.isAvailable()) return;
 
-    // Filter --ro paths that don't exist on this host (e.g. /lib64 on
-    // Alpine). Without this, landlock_add_rule returns ENOENT and fails
-    // the whole call. Under --best-effort we've already warned in
-    // applyPermissions; here we just trim.
     var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_state.deinit();
     const ro_existing = existingRoPaths(arena_state.allocator(), args.ro) catch args.ro;
 
     landlock.apply(.{
-        .allow_rw = args.rw,
-        .allow_ro = ro_existing,
+        .rw = args.rw,
+        .ro = ro_existing,
     }) catch |err| {
-        // Landlock failure is fatal in the child — the caller asked for
-        // isolation and we couldn't deliver it. Better to error than ship a
-        // false sense of security.
+        // Fatal: the caller asked for isolation we can't deliver.
         var msg_buf: [128]u8 = undefined;
         const msg = std.fmt.bufPrint(&msg_buf, "agent-jail: landlock failed: {s}\n", .{@errorName(err)}) catch "agent-jail: landlock failed\n";
         writeStderr(msg);
@@ -245,12 +231,10 @@ fn applyLandlockIfRequested(args: Args.Parsed) void {
     };
 }
 
-/// Close every FD >= 3. Uses Linux's `close_range(3, ~0, 0)` syscall if
-/// available (single syscall, O(1)); falls back to a close(2) loop up to
-/// RLIMIT_NOFILE on macOS/BSD/older Linux.
+/// Close every FD >= 3. Prefers close_range(2) on Linux 5.9+, falls back
+/// to a close(2) loop up to RLIMIT_NOFILE.
 fn closeFdsAboveStdio() void {
     if (builtin.os.tag == .linux) {
-        // syscall number 436 on every architecture Linux 5.9+ supports.
         const SYS_close_range: usize = 436;
         const rc = std.os.linux.syscall3(
             @enumFromInt(SYS_close_range),
@@ -258,8 +242,7 @@ fn closeFdsAboveStdio() void {
             std.math.maxInt(c_uint),
             0,
         );
-        if (rc == 0) return; // success
-        // ENOSYS on pre-5.9 kernels: fall through to loop.
+        if (rc == 0) return;
     }
 
     var rl: c.Rlimit = .{ .rlim_cur = 4096, .rlim_max = 4096 };
@@ -277,10 +260,10 @@ fn writeStderr(s: []const u8) void {
 
 // ── Signal forwarding ───────────────────────────────────────────────
 
-/// Forward termination signals from the parent to the child's process group.
-/// A process-global `child_pid` is required because POSIX signal handlers
-/// take only the signal number — no userdata pointer. Safe because agent-jail
-/// wraps exactly one child per invocation, single-threaded.
+/// Forward termination signals from the parent to the child's process
+/// group. The `child_pid` slot is process-global because POSIX signal
+/// handlers take no userdata pointer; safe given agent-jail wraps one
+/// child per invocation.
 const signal_forward = struct {
     var child_pid: std.c.pid_t = 0;
     const forwarded = [_]std.c.SIG{ .TERM, .INT, .HUP, .QUIT };
@@ -305,8 +288,7 @@ const signal_forward = struct {
 
     fn handle(sig: std.c.SIG) callconv(.c) void {
         if (child_pid <= 0) return;
-        // Negative pid → signal the whole process group.
-        _ = std.c.kill(-child_pid, sig);
+        _ = std.c.kill(-child_pid, sig); // negative pid = whole pgroup
     }
 };
 
@@ -356,17 +338,15 @@ fn chmodIfExists(path: []const u8, mode: u16) Error!void {
     };
 }
 
-/// Idempotent `mkdir -p` via libc: walks the path, creating each component
-/// with mode 0700. An existing directory at any level is fine; anything
-/// else (a file in the way, permission error) surfaces. Caller chmod's the
-/// final leaf afterwards so the mkdir mode is not load-bearing.
+/// Idempotent `mkdir -p`. Each component is created mode 0700; caller
+/// chmods the leaf afterwards, so the mkdir mode is not load-bearing.
 fn mkdirP(path: []const u8) Error!void {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     if (path.len == 0 or path.len >= buf.len) return error.PathTooLong;
     @memcpy(buf[0..path.len], path);
     buf[path.len] = 0;
 
-    var i: usize = 1; // skip any leading '/'
+    var i: usize = 1; // skip leading '/'
     while (i <= path.len) : (i += 1) {
         if (i == path.len or path[i] == '/') {
             const saved = buf[i];
@@ -374,7 +354,7 @@ fn mkdirP(path: []const u8) Error!void {
             const rc = c.mkdir(@ptrCast(&buf), 0o700);
             buf[i] = saved;
             if (rc != 0) switch (c.lastErrno()) {
-                .EXIST => {}, // already there — fine
+                .EXIST => {},
                 .NOENT => return error.FileNotFound,
                 .ACCES, .PERM => return error.AccessDenied,
                 else => return error.Unexpected,
@@ -394,12 +374,11 @@ fn errnoToError() Error {
 fn pathExists(path: []const u8) bool {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const z = std.fmt.bufPrintZ(&buf, "{s}", .{path}) catch return false;
-    return c.access(z.ptr, 0) == 0; // F_OK = 0
+    return c.access(z.ptr, 0) == 0; // F_OK
 }
 
-/// Is the given path a symlink? Checked via readlink(2): returns the link
-/// target if it is a symlink, fails with EINVAL if not. Avoids the per-
-/// platform `struct stat` layout mess.
+/// Probe via readlink(2): succeeds if path is a symlink, fails EINVAL if
+/// not. Avoids pulling in per-platform `struct stat`.
 fn isSymlink(path: []const u8) Error!bool {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const z = std.fmt.bufPrintZ(&buf, "{s}", .{path}) catch return error.PathTooLong;
@@ -407,19 +386,13 @@ fn isSymlink(path: []const u8) Error!bool {
     const rc = c.readlink(z.ptr, &dummy, dummy.len);
     if (rc >= 0) return true;
     return switch (c.lastErrno()) {
-        .INVAL => false, // not a symlink
-        .NOENT => false, // doesn't exist (shouldn't happen post-mkdirP)
+        .INVAL, .NOENT => false,
         .ACCES, .PERM => error.AccessDenied,
         else => error.Unexpected,
     };
 }
 
-// ── libc syscall shims ──────────────────────────────────────────────
-//
-// std.Io in 0.16 doesn't expose path-level chown/chmod/mkdir, and its
-// std.process.spawn doesn't close caller FDs or drop supplementary groups.
-// Going through libc directly gives us precise control — these are stable
-// POSIX syscalls, identical on Linux/macOS/BSD.
+// ── libc shims ──────────────────────────────────────────────────────
 
 const c = struct {
     // Process lifecycle.
@@ -434,9 +407,8 @@ const c = struct {
     extern "c" fn setgroups(size: usize, list: ?[*]const u32) c_int;
     extern "c" fn setpgid(pid: std.c.pid_t, pgid: std.c.pid_t) c_int;
 
-    // uid/gid setters. Linux/FreeBSD have setresuid/gid (real+effective+saved
-    // in one call); macOS/BSD only ship setreuid/gid (real+effective). For a
-    // drop-privileges-forever use, saved = effective is fine either way.
+    // setresuid/gid (Linux/FreeBSD) sets real+effective+saved; setreuid/gid
+    // (macOS/BSD) only sets real+effective. Equivalent for a permanent drop.
     const use_setres = switch (builtin.os.tag) {
         .linux, .freebsd => true,
         else => false,
@@ -470,16 +442,15 @@ const c = struct {
         rlim_cur: u64,
         rlim_max: u64,
     };
-    /// RLIMIT_NOFILE's numeric value is 7 on Linux, 8 on macOS. Comptime.
+    /// RLIMIT_NOFILE: 7 on Linux, 8 on macOS.
     pub const RLIMIT_NOFILE: c_int = switch (builtin.os.tag) {
         .macos, .ios, .tvos, .watchos, .visionos => 8,
         else => 7,
     };
     extern "c" fn getrlimit(resource: c_int, rlim: *Rlimit) c_int;
 
-    /// Thread-local errno via std.c._errno(). Portable across glibc/musl/
-    /// darwin/bsd — they all expose a function returning *c_int to the TLS
-    /// errno slot.
+    /// Thread-local errno via std.c._errno(). Portable across glibc, musl,
+    /// darwin, and bsd.
     pub fn lastErrno() std.c.E {
         return @enumFromInt(std.c._errno().*);
     }

@@ -4,28 +4,26 @@
 //! access — and the access of all its descendants — without needing root or
 //! CAP_SYS_ADMIN. It's the only mainline Linux mechanism that does this.
 //!
-//! Semantics we implement:
+//! Semantics:
 //! - Default-deny. The child can access nothing by default.
-//! - Each `--rw PATH` opens a hierarchy with full read+write+exec rights.
+//! - Each `--rw PATH` opens a hierarchy with read+write+exec rights.
 //! - Each `--ro PATH` opens a hierarchy with read+exec rights only.
-//! - `--hide` is a no-op under Landlock (default-deny already covers it);
-//!   it only has meaning in uid-switch mode.
+//! - `--hide` is a no-op here; default-deny already covers it.
 //!
-//! ABI best-effort: we probe the kernel's supported Landlock version and
-//! strip unsupported bits from the handled-access mask so older kernels
-//! keep working with reduced protection rather than erroring.
+//! The handled-access mask is trimmed to the kernel's supported ABI, so
+//! older kernels get reduced protection instead of an error.
 //!
-//! This module only applies the ruleset — it does NOT call execvp. Caller
-//! is expected to invoke `apply` in the fork child right before exec.
+//! This module only applies the ruleset; the caller invokes `apply` in
+//! the fork child right before exec.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const linux = std.os.linux;
 
 pub const Error = error{
-    NotSupported,           // kernel has no Landlock (ENOSYS or ABI < 1)
-    Disabled,               // Landlock compiled but not in LSM stack (EOPNOTSUPP)
-    PathNotFound,           // --allow-* target doesn't exist
+    NotSupported,     // kernel has no Landlock (ENOSYS or ABI < 1)
+    Disabled,         // compiled but not in LSM stack (EOPNOTSUPP)
+    PathNotFound,     // --rw/--ro target doesn't exist
     PermissionDenied,
     PathTooLong,
     Unexpected,
@@ -52,7 +50,7 @@ pub const ACCESS_FS = struct {
     pub const IOCTL_DEV: u64 = 1 << 15; // ABI 5+
 };
 
-/// Full write set (used when we want "rw" on a hierarchy).
+/// Full write set granted on --rw hierarchies.
 pub const RW_ACCESS: u64 =
     ACCESS_FS.EXECUTE | ACCESS_FS.WRITE_FILE | ACCESS_FS.READ_FILE |
     ACCESS_FS.READ_DIR | ACCESS_FS.REMOVE_DIR | ACCESS_FS.REMOVE_FILE |
@@ -65,9 +63,8 @@ pub const RW_ACCESS: u64 =
 pub const RO_ACCESS: u64 =
     ACCESS_FS.EXECUTE | ACCESS_FS.READ_FILE | ACCESS_FS.READ_DIR;
 
-/// Subset of RW_ACCESS that only applies to file objects (not dirs). When we
-/// add a rule on a path that's actually a file, the non-file bits have to be
-/// stripped, or landlock_add_rule returns EINVAL.
+/// Subset of RW_ACCESS that applies to files (not dirs). landlock_add_rule
+/// returns EINVAL if dir-only bits are set on a file path.
 const FILE_ACCESS: u64 =
     ACCESS_FS.EXECUTE | ACCESS_FS.WRITE_FILE | ACCESS_FS.READ_FILE |
     ACCESS_FS.TRUNCATE | ACCESS_FS.IOCTL_DEV;
@@ -93,11 +90,10 @@ pub const PathBeneathAttr = extern struct {
 
 const PR_SET_NO_NEW_PRIVS: c_int = 38;
 
-// O_PATH, O_CLOEXEC — values from std.posix.O.
 const O_PATH_CLOEXEC: u32 = @bitCast(std.posix.O{ .PATH = true, .CLOEXEC = true });
 
-// O_DIRECTORY: open only succeeds if path is a directory. Lets us ask "is
-// this a dir?" without pulling in struct stat, whose layout differs per arch.
+// O_DIRECTORY fails ENOTDIR on non-dir paths — used to probe dir-ness
+// without pulling in per-arch `struct stat`.
 const O_DIRECTORY_PATH_CLOEXEC: u32 = @bitCast(std.posix.O{ .DIRECTORY = true, .PATH = true, .CLOEXEC = true });
 
 // ── Syscall wrappers ─────────────────────────────────────────────────
@@ -166,32 +162,27 @@ pub fn isAvailable() bool {
 
 pub const Policy = struct {
     /// Paths the sandboxed process may read+write+execute under.
-    allow_rw: []const []const u8,
+    rw: []const []const u8,
     /// Paths the sandboxed process may read+execute under (no write).
-    allow_ro: []const []const u8,
+    ro: []const []const u8,
 };
 
 /// Apply a Landlock policy to the current thread and its descendants.
+/// Once enforced, restrictions can never be relaxed, so only call this
+/// right before exec or in a dedicated setup thread.
 ///
-/// Must be called in a context where the caller is about to exec or is the
-/// sole consumer of the thread — once enforced, restrictions can never be
-/// relaxed.
-///
-/// Behavior:
-/// 1. Probe Landlock ABI. Strip access bits the kernel doesn't know.
-/// 2. Create a ruleset with handled_access_fs covering everything our policy
-///    could want to grant (ensures ruleset is the authority for those rights).
-/// 3. For each allow_rw path: open O_PATH and add a path-beneath rule with
-///    RW_ACCESS masked to supported bits.
-/// 4. For each allow_ro path: same, with RO_ACCESS.
-/// 5. prctl(PR_SET_NO_NEW_PRIVS) so the kernel will accept restrict_self.
-/// 6. landlock_restrict_self. From this point the thread (and its future
-///    descendants) can only access what the ruleset grants.
+/// Steps:
+/// 1. Probe ABI; trim access bits the kernel doesn't know.
+/// 2. Create a ruleset covering the full handled-access superset.
+/// 3. Add a path-beneath rule per --rw path (RW_ACCESS).
+/// 4. Add a path-beneath rule per --ro path (RO_ACCESS).
+/// 5. prctl(PR_SET_NO_NEW_PRIVS) so restrict_self is accepted.
+/// 6. landlock_restrict_self.
 pub fn apply(policy: Policy) Error!void {
     const abi = try probeAbi();
 
-    // Best-effort: strip access bits the running kernel doesn't support.
-    var handled: u64 = RW_ACCESS; // superset — covers both rw and ro.
+    // Trim access bits the running kernel doesn't support.
+    var handled: u64 = RW_ACCESS; // superset of RO_ACCESS
     if (abi < 2) handled &= ~ACCESS_FS.REFER;
     if (abi < 3) handled &= ~ACCESS_FS.TRUNCATE;
     if (abi < 5) handled &= ~ACCESS_FS.IOCTL_DEV;
@@ -206,9 +197,8 @@ pub fn apply(policy: Policy) Error!void {
     const ruleset_fd: c_int = @intCast(ruleset_fd_rc);
     defer _ = close(ruleset_fd);
 
-    // Each allow path → one path-beneath rule.
-    for (policy.allow_rw) |p| try addPathRule(ruleset_fd, p, RW_ACCESS & handled);
-    for (policy.allow_ro) |p| try addPathRule(ruleset_fd, p, RO_ACCESS & handled);
+    for (policy.rw) |p| try addPathRule(ruleset_fd, p, RW_ACCESS & handled);
+    for (policy.ro) |p| try addPathRule(ruleset_fd, p, RO_ACCESS & handled);
 
     if (prctl(PR_SET_NO_NEW_PRIVS, @as(c_int, 1), @as(c_int, 0), @as(c_int, 0), @as(c_int, 0)) != 0) {
         return error.PermissionDenied;
@@ -225,9 +215,8 @@ fn addPathRule(ruleset_fd: c_int, path: []const u8, access: u64) Error!void {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const z = std.fmt.bufPrintZ(&buf, "{s}", .{path}) catch return error.PathTooLong;
 
-    // Detect directory-ness by trying O_DIRECTORY first. If it succeeds, the
-    // path is a directory and we can keep all access bits. If it fails with
-    // ENOTDIR, it's a file — open plain O_PATH and strip dir-only bits.
+    // Try O_DIRECTORY first; ENOTDIR means it's a file, so reopen plain
+    // O_PATH and strip dir-only access bits.
     var is_dir = true;
     var fd = open(z.ptr, @bitCast(O_DIRECTORY_PATH_CLOEXEC));
     if (fd < 0) {
@@ -250,7 +239,7 @@ fn addPathRule(ruleset_fd: c_int, path: []const u8, access: u64) Error!void {
 
     const final_access = if (is_dir) access else (access & FILE_ACCESS);
 
-    if (final_access == 0) return; // nothing granted → skip (kernel rejects empty)
+    if (final_access == 0) return; // kernel rejects empty rules
 
     const rule = PathBeneathAttr{
         .allowed_access = final_access,
