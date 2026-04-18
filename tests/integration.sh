@@ -70,6 +70,49 @@ test_cwd_flag() {
   [[ "$out" == "$TMP" || "$out" == "/private$TMP" ]] && ok "got '$out'" || fail "got '$out'"
 }
 
+test_ro_without_landlock_errors_loudly() {
+  echo "test: --ro without Landlock is a loud error (no --best-effort)"
+  if [[ "$(uname -s)" == "Linux" ]] && [[ -r /sys/kernel/security/lsm ]] \
+     && grep -q landlock /sys/kernel/security/lsm; then
+    skip "host has Landlock — this test only meaningful without it"
+    return
+  fi
+  out=$("$BIN" --ro /usr -- "$TRUE" 2>&1)
+  rc=$?
+  if [[ $rc -eq 1 ]] && echo "$out" | grep -q "requires Landlock"; then
+    ok "errored loudly (rc=1, clear message)"
+  else
+    fail "rc=$rc out='$out'"
+  fi
+}
+
+test_best_effort_degrades_gracefully() {
+  echo "test: --best-effort --ro works everywhere, warns when can't enforce"
+  out=$("$BIN" --best-effort --ro /usr -- "$TRUE" 2>&1)
+  rc=$?
+  [[ $rc -eq 0 ]] && ok "exited 0 (warnings ok)" || fail "rc=$rc out='$out'"
+}
+
+test_system_ro_shorthand() {
+  echo "test: --system-ro expands to standard system dirs"
+  rm -rf "$TMP/wsp3"
+  out=$("$BIN" --best-effort --system-ro --rw "$TMP/wsp3" -- "$SH" -c "echo hi > $TMP/wsp3/f && cat $TMP/wsp3/f")
+  [[ "$out" == "hi" ]] && ok "system-ro + rw works end-to-end" || fail "got '$out'"
+}
+
+test_hide_alias() {
+  echo "test: --hide is accepted (alias of old --deny)"
+  "$BIN" --hide "$TMP/nowhere" -- "$TRUE"
+  [[ $? -eq 0 ]] && ok "--hide accepted" || fail "wrong exit"
+}
+
+test_legacy_flag_aliases() {
+  echo "test: --allow-rw/--allow-ro/--deny still work (backwards compat)"
+  rm -rf "$TMP/legacy"
+  "$BIN" --best-effort --allow-rw "$TMP/legacy" --allow-ro /usr --deny "$TMP/x" -- "$TRUE"
+  [[ $? -eq 0 && -d "$TMP/legacy" ]] && ok "legacy aliases work" || fail "rc=$?"
+}
+
 test_help_exits_0
 test_version
 test_missing_command
@@ -79,5 +122,10 @@ test_stdout_passthrough
 test_allow_rw_creates_dir
 test_allow_rw_child_can_write
 test_cwd_flag
+test_ro_without_landlock_errors_loudly
+test_best_effort_degrades_gracefully
+test_system_ro_shorthand
+test_hide_alias
+test_legacy_flag_aliases
 
 summary_and_exit

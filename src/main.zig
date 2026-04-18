@@ -2,10 +2,13 @@
 //!
 //! Picks the strongest backend available at runtime:
 //!   - uid switch (any POSIX) when --uid is set and caller is root
-//!   - Landlock (Linux 5.13+) when --allow-ro/--allow-rw are set
+//!   - Landlock (Linux 5.13+) when --ro/--rw are set
 //!   - both layered, when both apply (defense in depth)
 //!
-//! Fails loud if the user requested a guarantee the host can't deliver.
+//! Default is fail-loud: if the user asks for a guarantee the host can't
+//! deliver (e.g. --ro without Landlock), we refuse to run. Pass
+//! --best-effort to degrade gracefully with a stderr warning instead.
+//!
 //! See src/sandbox.zig and src/landlock.zig for the mechanism details.
 
 const std = @import("std");
@@ -51,20 +54,32 @@ pub fn main(init: std.process.Init) !u8 {
         return 2;
     }
 
-    // Fail loud if the user asked for Landlock-backed isolation but the
-    // kernel can't deliver it. (--uid alone works anywhere without a
-    // backend probe; the setuid syscall itself surfaces permission errors.)
-    const wants_landlock = parsed.allow_ro.len > 0;
+    // The user asked for --ro path isolation, which only Landlock can deliver.
+    // If the host can't, behavior depends on --best-effort:
+    //   default: refuse to run (fail loud: you asked for a guarantee we can't give).
+    //   best-effort: warn once on stderr, continue with whatever backend(s) do apply.
+    const wants_landlock = parsed.ro.len > 0;
     const backend = sandbox.pickBackend(parsed);
-    if (wants_landlock and backend != .landlock and backend != .uid_and_landlock) {
-        try stderr.writeAll(
-            \\agent-jail: --allow-ro requires Landlock (Linux 5.13+ with
-            \\  CONFIG_SECURITY_LANDLOCK=y and 'landlock' in the LSM list).
-            \\  Host lacks support. Refusing to run without it.
-            \\
-        );
-        try stderr.flush();
-        return 1;
+    const have_landlock = backend == .landlock or backend == .uid_and_landlock;
+    if (wants_landlock and !have_landlock) {
+        if (parsed.best_effort) {
+            try stderr.writeAll(
+                \\agent-jail: warning: Landlock unavailable on this host;
+                \\  --ro/--system-ro paths will not be enforced. Continuing
+                \\  under --best-effort with remaining layers (if any).
+                \\
+            );
+            try stderr.flush();
+        } else {
+            try stderr.writeAll(
+                \\agent-jail: --ro requires Landlock (Linux 5.13+ with
+                \\  CONFIG_SECURITY_LANDLOCK=y and 'landlock' in the LSM list).
+                \\  Host lacks support. Pass --best-effort to proceed without it.
+                \\
+            );
+            try stderr.flush();
+            return 1;
+        }
     }
 
     const ids: sandbox.Ids = .{
@@ -92,20 +107,40 @@ fn printUsage(w: *std.Io.Writer) !void {
         \\Usage:
         \\  agent-jail [options] -- COMMAND [ARGS...]
         \\
-        \\Options:
-        \\  --uid N                Drop to this uid before exec (needs root)
-        \\  --gid N                Drop to this gid (defaults to --uid)
-        \\  --deny PATH            chmod 0700 this path (uid-switch mode only)
-        \\  --allow-rw PATH        Sandbox may read+write under PATH
-        \\  --allow-ro PATH        Sandbox may read+execute under PATH
-        \\  --cwd PATH             Working directory for the child
-        \\  -h, --help             Show this help
-        \\  -V, --version          Show version
+        \\Paths (each repeatable):
+        \\  --rw PATH              Sandbox may read+write under PATH. Created if
+        \\                         missing, chmod'd to 0700, chown'd to --uid.
+        \\  --ro PATH              Sandbox may read+execute under PATH.
+        \\                         Enforced by Landlock only.
+        \\  --hide PATH            Sandbox can't touch PATH. chmod 0700 under
+        \\                         uid-switch; no-op under Landlock (default-deny).
+        \\  --system-ro            Shorthand: --ro on standard system dirs
+        \\                         (/usr /lib /lib64 /bin /sbin /etc /usr/sbin).
+        \\                         Missing paths are skipped.
         \\
-        \\Backends (auto-selected):
-        \\  --uid + --allow-*     → uid switch + Landlock (Linux, defense in depth)
-        \\  --uid                 → uid switch (any POSIX)
-        \\  --allow-*             → Landlock (Linux 5.13+, unprivileged)
+        \\Identity:
+        \\  --uid N                Drop to this uid before exec (needs root).
+        \\  --gid N                Drop to this gid (defaults to --uid).
+        \\
+        \\Process:
+        \\  --cwd PATH             Working directory for the child.
+        \\  --best-effort          Don't fail when a requested protection can't
+        \\                         be delivered by the host. Warn once on stderr
+        \\                         and continue with whatever backend(s) apply.
+        \\
+        \\Info:
+        \\  -h, --help             Show this help.
+        \\  -V, --version          Show version.
+        \\
+        \\Backends are picked at runtime:
+        \\  uid switch      any POSIX host where agent-jail runs as root
+        \\  Landlock        Linux 5.13+ with the Landlock LSM enabled
+        \\  both            Linux root + Landlock (defense in depth)
+        \\
+        \\Idiomatic single-line invocation (works on every host with --best-effort):
+        \\  agent-jail --best-effort --system-ro \\
+        \\    --rw /data/workspace --rw /data/session --hide /data/vex \\
+        \\    -- /app/agent
         \\
     );
     try w.flush();

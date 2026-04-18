@@ -65,12 +65,12 @@ pub fn applyPermissions(args: Args.Parsed, ids: Ids) Error!void {
     const caller_uid: u32 = c.getuid();
     const caller_gid: u32 = c.getgid();
 
-    for (args.deny) |path| {
+    for (args.hide) |path| {
         if (switching_uid) try chownIfExists(path, caller_uid, caller_gid);
         try chmodIfExists(path, 0o700);
     }
 
-    for (args.allow_rw) |path| {
+    for (args.rw) |path| {
         try mkdirP(path);
         // Refuse to chmod/chown a symlink: would silently retarget the
         // sandbox to wherever the link points (e.g. /etc/passwd).
@@ -79,21 +79,34 @@ pub fn applyPermissions(args: Args.Parsed, ids: Ids) Error!void {
         try chmod(path, 0o700);
     }
 
-    // allow_ro paths: create if missing but leave mode alone — caller may be
-    // pointing at system dirs like /usr or /lib that shouldn't be chmod'd.
-    // Just verify existence.
-    for (args.allow_ro) |path| {
+    // ro paths: must already exist (caller shouldn't ask us to create
+    // /usr if missing). Under --best-effort, a missing path is a warning.
+    for (args.ro) |path| {
         if (pathExists(path)) continue;
-        // If it doesn't exist, that's a config error — but not ours to create.
+        if (args.best_effort) {
+            writeStderr("agent-jail: warning: --ro path missing, skipping: ");
+            writeStderr(path);
+            writeStderr("\n");
+            continue;
+        }
         return error.FileNotFound;
     }
+}
+
+/// Return a copy of `ro` with non-existent paths filtered out. Used by the
+/// child before calling landlock.apply, so --system-ro works uniformly on
+/// hosts that don't have /lib64 or /usr/sbin (macOS, Alpine, etc).
+pub fn existingRoPaths(arena: std.mem.Allocator, ro: []const []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    for (ro) |p| if (pathExists(p)) try out.append(arena, p);
+    return out.items;
 }
 
 /// Decide which backend(s) apply given the CLI args and host capabilities.
 /// Call AFTER applyPermissions (which is cheap + harmless for all backends).
 pub fn pickBackend(args: Args.Parsed) Backend {
     const wants_uid = args.uid != null;
-    const wants_paths = args.allow_rw.len > 0 or args.allow_ro.len > 0;
+    const wants_paths = args.rw.len > 0 or args.ro.len > 0;
 
     if (!wants_uid and !wants_paths) return .none;
 
@@ -207,12 +220,20 @@ fn childSetup(args: Args.Parsed, ids: Ids, cwdz: ?[*:0]const u8) void {
 /// via pickBackend whether that's acceptable.
 fn applyLandlockIfRequested(args: Args.Parsed) void {
     if (builtin.os.tag != .linux) return;
-    if (args.allow_rw.len == 0 and args.allow_ro.len == 0) return;
+    if (args.rw.len == 0 and args.ro.len == 0) return;
     if (!landlock.isAvailable()) return;
 
+    // Filter --ro paths that don't exist on this host (e.g. /lib64 on
+    // Alpine). Without this, landlock_add_rule returns ENOENT and fails
+    // the whole call. Under --best-effort we've already warned in
+    // applyPermissions; here we just trim.
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const ro_existing = existingRoPaths(arena_state.allocator(), args.ro) catch args.ro;
+
     landlock.apply(.{
-        .allow_rw = args.allow_rw,
-        .allow_ro = args.allow_ro,
+        .allow_rw = args.rw,
+        .allow_ro = ro_existing,
     }) catch |err| {
         // Landlock failure is fatal in the child — the caller asked for
         // isolation and we couldn't deliver it. Better to error than ship a

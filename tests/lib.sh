@@ -48,11 +48,11 @@ summary_and_exit() {
 }
 
 # On Linux with Landlock enabled, agent-jail auto-applies a default-deny
-# Landlock domain when --allow-rw or --allow-ro is used. Tests that spawn
-# real commands (not just $TRUE) need read+exec on the system dirs the
-# dynamic linker and libc come from, or exec fails.
+# Landlock domain when --rw or --ro is used. Tests that spawn real commands
+# (not just $TRUE) need read+exec on the system dirs the dynamic linker
+# and libc come from, or exec fails.
 #
-# Usage:  "$BIN" --allow-rw "$TMP/wsp" $(landlock_system_ro) -- /bin/sh ...
+# Usage:  "$BIN" --rw "$TMP/wsp" $(landlock_system_ro) -- /bin/sh ...
 #
 # Prints the flags to stdout on Linux+Landlock hosts, empty otherwise.
 # Using command substitution (not a bash array) sidesteps the `set -u`
@@ -60,6 +60,6 @@ summary_and_exit() {
 landlock_system_ro() {
   if [[ "$(uname -s)" == "Linux" ]] && [[ -r /sys/kernel/security/lsm ]] \
      && grep -q landlock /sys/kernel/security/lsm; then
-    echo "--allow-ro /usr --allow-ro /lib --allow-ro /lib64 --allow-ro /bin --allow-ro /etc"
+    echo "--system-ro"
   fi
 }
