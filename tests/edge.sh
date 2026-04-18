@@ -189,7 +189,10 @@ test_fork_bomb_reaped_on_exit() {
     " >/dev/null 2>&1
   # Allow a moment for zombies to be reaped.
   sleep 0.5
-  remaining=$(pgrep -fc "$marker" 2>/dev/null || echo 0)
+  # pgrep -c prints 0 AND exits 1 when there are no matches. Use || true
+  # so pipefail doesn't bite; grab only the first line in case of noise.
+  remaining=$(pgrep -fc "$marker" 2>/dev/null | head -1 || true)
+  remaining=${remaining:-0}
   if [[ "$remaining" -eq 0 ]]; then
     ok "all 5 descendants reaped"
   else
@@ -255,9 +258,12 @@ test_quote_escape_roundtrip() {
 test_ro_on_regular_file() {
   echo "test: --ro on a regular file (not dir) works"
   echo "readable" > "$TMP/regular"
-  # Landlock and sandbox-exec both support file-level rules. We capture
-  # stderr too so --best-effort warnings don't break the grep match.
-  out=$("$BIN" --best-effort --ro "$TMP/regular" -- "$CAT" "$TMP/regular" 2>&1)
+  # Landlock and sandbox-exec both support file-level rules. On Linux
+  # with Landlock, we also need --system-ro so the dynamic linker can
+  # load cat's dependencies (/lib, /etc/ld.so.cache); otherwise exec
+  # fails before the file-level --ro can even be exercised.
+  out=$("$BIN" --best-effort --system-ro --ro "$TMP/regular" \
+    -- "$CAT" "$TMP/regular" 2>&1)
   if echo "$out" | grep -q "^readable$"; then
     ok "file-level --ro works"
   else
