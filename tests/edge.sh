@@ -113,11 +113,17 @@ test_empty_string_as_path() {
 # ── 4. Read-only filesystem ─────────────────────────────────────────
 
 test_rw_on_readonly_fs() {
-  # /sys is always read-only on Linux. mkdir should fail, agent-jail should
-  # surface it as a clean error (not a silent success).
-  if ! is_linux; then skip "needs Linux /sys read-only mount"; return; fi
-  echo "test: --rw on a read-only filesystem surfaces a clean error"
-  "$BIN" --rw "/sys/readonly-test-$$" -- "$TRUE" 2>/dev/null
+  if ! is_linux; then skip "needs Linux read-only mount"; return; fi
+  # Find a read-only mount to test against. /sys is writable in some
+  # container configs; /proc/sys is more reliably read-only, but it's also
+  # the wrong fs type for mkdir. Use findmnt to pick a real ro mount.
+  ro_mount=$(findmnt -nr -o TARGET,OPTIONS 2>/dev/null | awk '$2 ~ /(^|,)ro(,|$)/ {print $1; exit}')
+  if [[ -z "$ro_mount" ]]; then
+    skip "no read-only mount found on this host"
+    return
+  fi
+  echo "test: --rw on a read-only filesystem ($ro_mount) surfaces a clean error"
+  "$BIN" --rw "$ro_mount/readonly-test-$$" -- "$TRUE" 2>/dev/null
   rc=$?
   [[ $rc -eq 1 ]] && ok "ro-fs --rw rejected (exit 1)" || fail "wrong exit $rc"
 }
@@ -131,13 +137,15 @@ test_rw_on_readonly_fs() {
 test_closerange_fallback_works() {
   if ! is_linux; then skip "Linux-only FD-closing code path"; return; fi
   echo "test: child's FD table is clean even under ulimit -n 64"
-  # Run under a low nofile limit so the fallback loop terminates fast.
-  out=$(ulimit -n 64 2>/dev/null; "$BIN" -- "$SH" -c '
-    count=$(ls /proc/self/fd 2>/dev/null | wc -l)
-    echo $count
-  ')
-  # stdin/stdout/stderr/3 (from ls itself) = 4; <=5 is expected
-  [[ "$out" -le 5 ]] && ok "clean FD table ($out fds)" || fail "too many FDs: $out"
+  out=$(ulimit -n 64 2>/dev/null; "$BIN" -- "$SH" -c 'ls /proc/self/fd 2>/dev/null | wc -l')
+  # Normalize whitespace so [[ -le ]] gets a clean integer.
+  count=$(echo "$out" | tr -dc '0-9')
+  # stdin/stdout/stderr/3 (from ls itself) = 4; <=5 is expected.
+  if [[ -n "$count" ]] && [[ "$count" -le 5 ]]; then
+    ok "clean FD table ($count fds)"
+  else
+    fail "too many FDs: '$out'"
+  fi
 }
 
 # ── 6. suid-root binary ────────────────────────────────────────────
@@ -247,9 +255,14 @@ test_quote_escape_roundtrip() {
 test_ro_on_regular_file() {
   echo "test: --ro on a regular file (not dir) works"
   echo "readable" > "$TMP/regular"
-  # Landlock and sandbox-exec both support file-level rules.
+  # Landlock and sandbox-exec both support file-level rules. We capture
+  # stderr too so --best-effort warnings don't break the grep match.
   out=$("$BIN" --best-effort --ro "$TMP/regular" -- "$CAT" "$TMP/regular" 2>&1)
-  [[ "$out" == "readable" ]] && ok "file-level --ro works" || fail "got '$out'"
+  if echo "$out" | grep -q "^readable$"; then
+    ok "file-level --ro works"
+  else
+    fail "got '$out'"
+  fi
 }
 
 # ── 13. Empty workspace + immediate exit ────────────────────────────
