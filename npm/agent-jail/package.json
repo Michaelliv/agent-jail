@@ -1,0 +1,51 @@
+{
+  "name": "agent-jail",
+  "version": "0.0.0",
+  "description": "Portable filesystem sandbox for spawning untrusted subprocesses. One static binary, picks the strongest backend available (uid switch on POSIX, Landlock on Linux 5.13+, or both layered).",
+  "license": "MIT",
+  "homepage": "https://github.com/Michaelliv/agent-jail",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Michaelliv/agent-jail.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Michaelliv/agent-jail/issues"
+  },
+  "keywords": [
+    "sandbox",
+    "landlock",
+    "subprocess",
+    "security",
+    "isolation",
+    "agent",
+    "ai"
+  ],
+  "main": "index.js",
+  "types": "index.d.ts",
+  "bin": {
+    "agent-jail": "bin/agent-jail.js"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "bin/agent-jail.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "os": [
+    "linux",
+    "darwin"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "optionalDependencies": {
+    "agent-jail-linux-x64": "0.0.0",
+    "agent-jail-linux-arm64": "0.0.0",
+    "agent-jail-darwin-x64": "0.0.0",
+    "agent-jail-darwin-arm64": "0.0.0"
+  }
+}

@@ -1,3 +1,11 @@
 zig-cache/
 zig-out/
 .zig-cache/
+
+# The release workflow drops the binary into these at publish time.
+# Never commit them; they're fetched from GitHub release artifacts.
+npm/agent-jail-*/bin/agent-jail
+
+# npm artifacts
+node_modules/
+*.tgz

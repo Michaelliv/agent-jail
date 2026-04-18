@@ -1,0 +1,21 @@
+{
+  "name": "agent-jail-darwin-x64",
+  "version": "0.0.0",
+  "description": "The darwin-x64 binary for agent-jail. Do not install directly — install agent-jail instead.",
+  "license": "MIT",
+  "homepage": "https://github.com/Michaelliv/agent-jail",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Michaelliv/agent-jail.git"
+  },
+  "files": [
+    "bin/agent-jail",
+    "README.md"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ]
+}

@@ -71,3 +71,71 @@ jobs:
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+  npm-publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for --provenance
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Stage binaries into platform packages
+        run: |
+          set -euo pipefail
+          cp dist/agent-jail-x86_64-linux-musl   npm/agent-jail-linux-x64/bin/agent-jail
+          cp dist/agent-jail-aarch64-linux-musl  npm/agent-jail-linux-arm64/bin/agent-jail
+          cp dist/agent-jail-x86_64-macos        npm/agent-jail-darwin-x64/bin/agent-jail
+          cp dist/agent-jail-aarch64-macos       npm/agent-jail-darwin-arm64/bin/agent-jail
+          chmod +x npm/agent-jail-*/bin/agent-jail
+
+      - name: Set versions from tag
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          # Pin every platform package + the main package to the tag version.
+          # optionalDependencies in the main package pin to exact versions so
+          # the shim never resolves a mismatched binary.
+          for pkg in npm/agent-jail npm/agent-jail-linux-x64 npm/agent-jail-linux-arm64 npm/agent-jail-darwin-x64 npm/agent-jail-darwin-arm64; do
+            node -e "
+              const fs = require('fs');
+              const p = '$pkg/package.json';
+              const j = JSON.parse(fs.readFileSync(p, 'utf8'));
+              j.version = '$version';
+              if (j.optionalDependencies) {
+                for (const k of Object.keys(j.optionalDependencies)) {
+                  j.optionalDependencies[k] = '$version';
+                }
+              }
+              fs.writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
+            "
+          done
+          grep -H '"version"' npm/*/package.json
+
+      - name: Publish platform packages
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          for pkg in npm/agent-jail-linux-x64 npm/agent-jail-linux-arm64 npm/agent-jail-darwin-x64 npm/agent-jail-darwin-arm64; do
+            echo "=== publishing $pkg ==="
+            (cd "$pkg" && npm publish --access public --provenance)
+          done
+
+      - name: Publish main package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          cd npm/agent-jail
+          npm publish --access public --provenance
