@@ -48,12 +48,12 @@ test_supplementary_groups_cannot_read_group_0_file() {
 
 # ── 2. Symlink hijack ──────────────────────────────────────────────
 
-test_allow_rw_preexisting_symlink_to_dir() {
-  echo "test: --allow-rw rejects pre-existing symlink to dir"
+test_rw_preexisting_symlink_to_dir() {
+  echo "test: --rw rejects pre-existing symlink to dir"
   mkdir -p "$TMP/real"
   ln -sfn "$TMP/real" "$TMP/linkdir"
   real_mode_before=$(mode_of "$TMP/real")
-  "$BIN" --allow-rw "$TMP/linkdir" $(landlock_system_ro) -- "$TRUE" 2>/dev/null
+  "$BIN" --rw "$TMP/linkdir" $(landlock_system_ro) -- "$TRUE" 2>/dev/null
   rc=$?
   real_mode_after=$(mode_of "$TMP/real")
   if [[ $rc -eq 0 ]]; then
@@ -65,13 +65,13 @@ test_allow_rw_preexisting_symlink_to_dir() {
   fi
 }
 
-# ── 3. Overlapping deny and allow ──────────────────────────────────
+# ── 3. Overlapping --hide and --rw ─────────────────────────────────
 
-test_deny_prefix_of_allow() {
-  echo "test: --deny /X --allow-rw /X/sub → X is deny, sub is allow"
+test_hide_prefix_of_rw() {
+  echo "test: --hide /X --rw /X/sub → X is hidden, sub is writable"
   rm -rf "$TMP/top"
   mkdir -p "$TMP/top"
-  "$BIN" --deny "$TMP/top" --allow-rw "$TMP/top/sub" $(landlock_system_ro) -- "$TRUE"
+  "$BIN" --hide "$TMP/top" --rw "$TMP/top/sub" $(landlock_system_ro) -- "$TRUE"
   rc=$?
   [[ $rc -eq 0 ]] || { fail "exit $rc"; return; }
   top_mode=$(mode_of "$TMP/top")
@@ -83,10 +83,10 @@ test_deny_prefix_of_allow() {
   fi
 }
 
-test_same_path_in_deny_and_allow() {
-  echo "test: --deny /X --allow-rw /X (same path) — allow wins (later in code)"
+test_same_path_in_hide_and_rw() {
+  echo "test: --hide /X --rw /X (same path) — --rw wins (applied later)"
   mkdir -p "$TMP/both"
-  "$BIN" --deny "$TMP/both" --allow-rw "$TMP/both" $(landlock_system_ro) -- "$TRUE"
+  "$BIN" --hide "$TMP/both" --rw "$TMP/both" $(landlock_system_ro) -- "$TRUE"
   rc=$?
   [[ $rc -eq 0 ]] && ok "no crash, no error (defined behavior)" || fail "exit $rc"
 }
@@ -168,34 +168,34 @@ test_env_leaks_by_default() {
 # ── 8. Path weirdness ──────────────────────────────────────────────
 
 test_path_with_spaces() {
-  echo "test: --allow-rw path containing spaces"
+  echo "test: --rw path containing spaces"
   p="$TMP/with space/more space"
   rm -rf "$TMP/with space"
-  "$BIN" --allow-rw "$p" $(landlock_system_ro) -- "$TRUE"
+  "$BIN" --rw "$p" $(landlock_system_ro) -- "$TRUE"
   [[ -d "$p" ]] && ok "dir created" || fail "not created"
 }
 
 test_path_with_unicode() {
-  echo "test: --allow-rw path with unicode"
+  echo "test: --rw path with unicode"
   p="$TMP/café_🔒"
   rm -rf "$p"
-  "$BIN" --allow-rw "$p" $(landlock_system_ro) -- "$TRUE"
+  "$BIN" --rw "$p" $(landlock_system_ro) -- "$TRUE"
   [[ -d "$p" ]] && ok "unicode dir created" || fail "not created"
 }
 
 test_very_long_path() {
-  echo "test: --allow-rw path near PATH_MAX"
+  echo "test: --rw path near PATH_MAX"
   long=$(printf 'a%.0s' {1..200})
   p="$TMP/$long/$long"
   rm -rf "$TMP/$long"
-  "$BIN" --allow-rw "$p" $(landlock_system_ro) -- "$TRUE"
+  "$BIN" --rw "$p" $(landlock_system_ro) -- "$TRUE"
   [[ -d "$p" ]] && ok "long path handled" || fail "not created"
 }
 
-test_many_allow_rw_flags() {
-  echo "test: 100 --allow-rw flags work"
+test_many_rw_flags() {
+  echo "test: 100 --rw flags work"
   args=()
-  for i in $(seq 1 100); do args+=(--allow-rw "$TMP/d$i"); done
+  for i in $(seq 1 100); do args+=(--rw "$TMP/d$i"); done
   "$BIN" "${args[@]}" $(landlock_system_ro) -- "$TRUE"
   [[ -d "$TMP/d100" ]] && ok "100 dirs created" || fail "missing some"
 }
@@ -207,7 +207,7 @@ test_concurrent_invocations() {
   rm -rf "$TMP/conc"
   pids=()
   for i in 1 2 3 4 5; do
-    "$BIN" --allow-rw "$TMP/conc/d$i" $(landlock_system_ro) -- "$SH" -c "sleep 0.3; echo ok > $TMP/conc/d$i/file" &
+    "$BIN" --rw "$TMP/conc/d$i" $(landlock_system_ro) -- "$SH" -c "sleep 0.3; echo ok > $TMP/conc/d$i/file" &
     pids+=($!)
   done
   for p in "${pids[@]}"; do wait "$p"; done
@@ -231,7 +231,7 @@ test_gid_override() {
 
 test_applypermissions_error_surfaces_cleanly() {
   echo "test: chmod fails on unwritable deny path → clean error exit"
-  "$BIN" --deny "/proc/1/doesnotexist" -- "$TRUE" 2>/dev/null
+  "$BIN" --hide "/proc/1/doesnotexist" -- "$TRUE" 2>/dev/null
   rc=$?
   [[ $rc -eq 0 || $rc -eq 1 ]] && ok "clean exit $rc" || fail "weird exit $rc"
 }
@@ -240,9 +240,9 @@ test_applypermissions_error_surfaces_cleanly() {
 
 test_supplementary_groups_dropped
 test_supplementary_groups_cannot_read_group_0_file
-test_allow_rw_preexisting_symlink_to_dir
-test_deny_prefix_of_allow
-test_same_path_in_deny_and_allow
+test_rw_preexisting_symlink_to_dir
+test_hide_prefix_of_rw
+test_same_path_in_hide_and_rw
 test_command_is_directory
 test_command_not_executable
 test_command_segfaults
@@ -252,7 +252,7 @@ test_env_leaks_by_default
 test_path_with_spaces
 test_path_with_unicode
 test_very_long_path
-test_many_allow_rw_flags
+test_many_rw_flags
 test_concurrent_invocations
 test_gid_override
 test_applypermissions_error_surfaces_cleanly

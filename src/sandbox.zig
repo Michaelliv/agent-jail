@@ -1,7 +1,7 @@
 //! Sandboxing core: permission setup + spawn with backend dispatch.
 //!
 //! Two backends, either or both may apply per call:
-//!   - uid switch: chown/chmod deny+allow-rw paths, then in the child call
+//!   - uid switch: chown/chmod hide+rw paths, then in the child call
 //!     setgroups(0)/setresgid/setresuid before exec. POSIX, any UNIX.
 //!   - Landlock: in the child, apply a landlock ruleset with path-beneath
 //!     rules right before exec. Linux 5.13+, unprivileged.
@@ -215,7 +215,7 @@ fn childSetup(args: Args.Parsed, ids: Ids, cwdz: ?[*:0]const u8) void {
     }
 }
 
-/// If the user asked for path-based sandboxing (allow-rw/ro) and Landlock
+/// If the user asked for path-based sandboxing (--rw/--ro) and Landlock
 /// is usable, apply it. Silent skip otherwise — parent has already decided
 /// via pickBackend whether that's acceptable.
 fn applyLandlockIfRequested(args: Args.Parsed) void {

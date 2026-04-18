@@ -12,7 +12,7 @@ require_tools true echo sleep sh cat pwd id
 
 TMP=$(mktemp -d)
 # When running as root, mktemp creates 0700 — an unprivileged child can't
-# traverse it to reach --allow-rw dirs inside. Make it traversable for the
+# traverse it to reach --rw dirs inside. Make it traversable for the
 # root-mode tests (the sandbox dirs themselves stay 0700 via agent-jail).
 chmod 0755 "$TMP"
 trap 'rm -rf "$TMP" 2>/dev/null' EXIT
@@ -56,9 +56,9 @@ test_uid_huge() {
 }
 
 test_value_starts_with_dash() {
-  echo "test: --deny --uid is taken as a value (path), not flag"
+  echo "test: --hide --uid is taken as a value (path), not flag"
   mkdir -p "$TMP/--uid"
-  "$BIN" --cwd "$TMP" --deny "--uid" -- "$TRUE"
+  "$BIN" --cwd "$TMP" --hide "--uid" -- "$TRUE"
   [[ $? -eq 0 ]] && ok "treats '--uid' as path value" || fail "wrong exit $?"
 }
 
@@ -68,10 +68,10 @@ test_repeated_flags_last_wins_for_scalars() {
   [[ "$out" == "$TMP" || "$out" == "/private$TMP" ]] && ok "last --cwd won" || fail "got '$out'"
 }
 
-test_repeated_deny_accumulate() {
-  echo "test: repeated --allow-rw all get applied"
+test_repeated_rw_accumulate() {
+  echo "test: repeated --rw all get applied"
   rm -rf "$TMP/a" "$TMP/b" "$TMP/c"
-  "$BIN" --allow-rw "$TMP/a" --allow-rw "$TMP/b" --allow-rw "$TMP/c" $(landlock_system_ro) -- "$TRUE"
+  "$BIN" --rw "$TMP/a" --rw "$TMP/b" --rw "$TMP/c" $(landlock_system_ro) -- "$TRUE"
   [[ -d "$TMP/a" && -d "$TMP/b" && -d "$TMP/c" ]] && ok "all 3 dirs created" || fail "missing dirs"
 }
 
@@ -121,49 +121,49 @@ test_stdin_passthrough() {
 
 # ── Filesystem permission setup ─────────────────────────────────────
 
-test_allow_rw_owner_when_no_uid_switch() {
-  echo "test: --allow-rw without --uid leaves owner as caller"
+test_rw_owner_when_no_uid_switch() {
+  echo "test: --rw without --uid leaves owner as caller"
   rm -rf "$TMP/wsp"
-  "$BIN" --allow-rw "$TMP/wsp" $(landlock_system_ro) -- "$TRUE"
+  "$BIN" --rw "$TMP/wsp" $(landlock_system_ro) -- "$TRUE"
   owner=$(owner_of "$TMP/wsp")
   caller=$(id -u)
   [[ "$owner" == "$caller" ]] && ok "owned by caller ($owner)" || fail "owner=$owner expected=$caller"
 }
 
-test_allow_rw_pre_existing_keeps_contents() {
-  echo "test: --allow-rw on pre-existing dir doesn't wipe contents"
+test_rw_pre_existing_keeps_contents() {
+  echo "test: --rw on pre-existing dir doesn't wipe contents"
   rm -rf "$TMP/wsp"
   mkdir -p "$TMP/wsp"
   echo "before" > "$TMP/wsp/file"
-  "$BIN" --allow-rw "$TMP/wsp" $(landlock_system_ro) -- "$TRUE"
+  "$BIN" --rw "$TMP/wsp" $(landlock_system_ro) -- "$TRUE"
   out=$(cat "$TMP/wsp/file")
   [[ "$out" == "before" ]] && ok "contents preserved" || fail "lost contents"
 }
 
-test_allow_rw_nested_creates_parents() {
-  echo "test: --allow-rw on nested path creates the chain"
+test_rw_nested_creates_parents() {
+  echo "test: --rw on nested path creates the chain"
   rm -rf "$TMP/a"
-  "$BIN" --allow-rw "$TMP/a/b/c/d" $(landlock_system_ro) -- "$TRUE"
+  "$BIN" --rw "$TMP/a/b/c/d" $(landlock_system_ro) -- "$TRUE"
   [[ -d "$TMP/a/b/c/d" ]] && ok "deep dir created" || fail "not created"
 }
 
-test_allow_rw_mode_is_0700() {
-  echo "test: --allow-rw dir ends up with mode 0700"
+test_rw_mode_is_0700() {
+  echo "test: --rw dir ends up with mode 0700"
   rm -rf "$TMP/wsp"
-  "$BIN" --allow-rw "$TMP/wsp" $(landlock_system_ro) -- "$TRUE"
+  "$BIN" --rw "$TMP/wsp" $(landlock_system_ro) -- "$TRUE"
   m=$(mode_of "$TMP/wsp")
   [[ "$m" == "700" ]] && ok "mode 0700" || fail "mode is $m"
 }
 
 # ── Symlink hazard ─────────────────────────────────────────────────
 
-test_allow_rw_symlink_to_outside() {
-  echo "test: --allow-rw rejects pre-existing symlink (no silent hijack)"
+test_rw_symlink_to_outside() {
+  echo "test: --rw rejects pre-existing symlink (no silent hijack)"
   rm -rf "$TMP/victim" "$TMP/link"
   echo "important" > "$TMP/victim"
   before_mode=$(mode_of "$TMP/victim")
   ln -s "$TMP/victim" "$TMP/link"
-  "$BIN" --allow-rw "$TMP/link" $(landlock_system_ro) -- "$TRUE" 2>/dev/null
+  "$BIN" --rw "$TMP/link" $(landlock_system_ro) -- "$TRUE" 2>/dev/null
   rc=$?
   after_mode=$(mode_of "$TMP/victim")
   if [[ "$before_mode" != "$after_mode" ]]; then
@@ -171,24 +171,24 @@ test_allow_rw_symlink_to_outside() {
   elif [[ $rc -eq 0 ]]; then
     fail "symlink accepted silently (exit 0) — victim mode unchanged but that's luck"
   else
-    ok "symlink at allow-rw path rejected (exit $rc, victim mode $after_mode)"
+    ok "symlink at --rw path rejected (exit $rc, victim mode $after_mode)"
   fi
 }
 
-test_deny_does_not_create() {
-  echo "test: --deny on nonexistent path is a no-op (doesn't create)"
+test_hide_does_not_create() {
+  echo "test: --hide on nonexistent path is a no-op (doesn't create)"
   rm -rf "$TMP/nope"
-  "$BIN" --deny "$TMP/nope" -- "$TRUE"
+  "$BIN" --hide "$TMP/nope" -- "$TRUE"
   rc=$?
   [[ $rc -eq 0 && ! -e "$TMP/nope" ]] && ok "no-op on missing path" || fail "rc=$rc"
 }
 
-test_deny_existing_chmods_700() {
-  echo "test: --deny on existing dir chmods to 0700"
+test_hide_existing_chmods_700() {
+  echo "test: --hide on existing dir chmods to 0700"
   rm -rf "$TMP/secret"
   mkdir -p "$TMP/secret"
   chmod 0755 "$TMP/secret"
-  "$BIN" --deny "$TMP/secret" -- "$TRUE"
+  "$BIN" --hide "$TMP/secret" -- "$TRUE"
   m=$(mode_of "$TMP/secret")
   [[ "$m" == "700" ]] && ok "chmod to 700" || fail "mode is $m"
 }
@@ -210,7 +210,7 @@ test_uid_drop_blocks_root_files() {
   rm -rf "$TMP/secret"
   mkdir -p "$TMP/secret"
   echo "topsecret" > "$TMP/secret/data"
-  "$BIN" --uid "$uid" --deny "$TMP/secret" -- "$CAT" "$TMP/secret/data" 2>/dev/null
+  "$BIN" --uid "$uid" --hide "$TMP/secret" -- "$CAT" "$TMP/secret/data" 2>/dev/null
   rc=$?
   [[ $rc -ne 0 ]] && ok "read denied (exit $rc)" || fail "AGENT READ DENIED FILE"
 }
@@ -222,7 +222,7 @@ test_uid_drop_blocks_workspace_escape() {
   rm -rf "$TMP/secret" "$TMP/wsp"
   mkdir -p "$TMP/secret"
   echo "do-not-touch" > "$TMP/secret/important"
-  "$BIN" --uid "$uid" --deny "$TMP/secret" --allow-rw "$TMP/wsp" $(landlock_system_ro) \
+  "$BIN" --uid "$uid" --hide "$TMP/secret" --rw "$TMP/wsp" $(landlock_system_ro) \
     -- "$SH" -c "echo allowed > $TMP/wsp/ok; echo pwn3d > $TMP/secret/important" 2>/dev/null
   if [[ -f "$TMP/wsp/ok" ]] && grep -q "do-not-touch" "$TMP/secret/important"; then
     ok "workspace writable, deny dir untouched"
@@ -280,20 +280,20 @@ test_uid_garbage
 test_uid_huge
 test_value_starts_with_dash
 test_repeated_flags_last_wins_for_scalars
-test_repeated_deny_accumulate
+test_repeated_rw_accumulate
 test_command_not_found
 test_signal_to_child
 test_no_shell_interpretation_of_args
 test_long_command_line
 test_stderr_separation
 test_stdin_passthrough
-test_allow_rw_owner_when_no_uid_switch
-test_allow_rw_pre_existing_keeps_contents
-test_allow_rw_nested_creates_parents
-test_allow_rw_mode_is_0700
-test_allow_rw_symlink_to_outside
-test_deny_does_not_create
-test_deny_existing_chmods_700
+test_rw_owner_when_no_uid_switch
+test_rw_pre_existing_keeps_contents
+test_rw_nested_creates_parents
+test_rw_mode_is_0700
+test_rw_symlink_to_outside
+test_hide_does_not_create
+test_hide_existing_chmods_700
 test_uid_drop_actually_isolates
 test_uid_drop_blocks_root_files
 test_uid_drop_blocks_workspace_escape

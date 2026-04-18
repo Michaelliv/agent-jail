@@ -6,10 +6,10 @@
 //!
 //! Semantics we implement:
 //! - Default-deny. The child can access nothing by default.
-//! - Each `--allow-rw PATH` opens a hierarchy with full read+write+exec rights.
-//! - Each `--allow-ro PATH` opens a hierarchy with read+exec rights only.
-//! - `--deny` is a no-op here (default-deny handles it); we keep the flag
-//!   around for uid-switch mode where it has meaning.
+//! - Each `--rw PATH` opens a hierarchy with full read+write+exec rights.
+//! - Each `--ro PATH` opens a hierarchy with read+exec rights only.
+//! - `--hide` is a no-op under Landlock (default-deny already covers it);
+//!   it only has meaning in uid-switch mode.
 //!
 //! ABI best-effort: we probe the kernel's supported Landlock version and
 //! strip unsupported bits from the handled-access mask so older kernels

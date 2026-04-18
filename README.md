@@ -49,9 +49,6 @@ Plus one shorthand and some operational knobs:
 | `-h, --help` | Show help. |
 | `-V, --version` | Show version. |
 
-The old names (`--allow-rw`, `--allow-ro`, `--deny`) are accepted as
-aliases so existing invocations keep working.
-
 ## The backends
 
 agent-jail doesn't have one "sandbox" mechanism — it picks from three at

@@ -47,19 +47,19 @@ test_stdout_passthrough() {
   [[ "$out" == "hello sandbox" ]] && ok "got '$out'" || fail "got '$out'"
 }
 
-test_allow_rw_creates_dir() {
-  echo "test: --allow-rw creates the dir with mode 0700"
+test_rw_creates_dir() {
+  echo "test: --rw creates the dir with mode 0700"
   rm -rf "$TMP/wsp"
-  "$BIN" --allow-rw "$TMP/wsp" $(landlock_system_ro) -- "$SH" -c "echo data > $TMP/wsp/x && cat $TMP/wsp/x" >/dev/null
+  "$BIN" --rw "$TMP/wsp" $(landlock_system_ro) -- "$SH" -c "echo data > $TMP/wsp/x && cat $TMP/wsp/x" >/dev/null
   if [[ ! -d "$TMP/wsp" ]]; then fail "dir not created"; return; fi
   m=$(mode_of "$TMP/wsp")
   [[ "$m" == "700" ]] && ok "mode 0700" || fail "mode is $m"
 }
 
-test_allow_rw_child_can_write() {
-  echo "test: child writes into --allow-rw dir succeed"
+test_rw_child_can_write() {
+  echo "test: child writes into --rw dir succeed"
   rm -rf "$TMP/wsp2"
-  out=$("$BIN" --allow-rw "$TMP/wsp2" $(landlock_system_ro) -- "$SH" -c "echo content > $TMP/wsp2/file && cat $TMP/wsp2/file")
+  out=$("$BIN" --rw "$TMP/wsp2" $(landlock_system_ro) -- "$SH" -c "echo content > $TMP/wsp2/file && cat $TMP/wsp2/file")
   [[ "$out" == "content" ]] && ok "wrote and read" || fail "got '$out'"
 }
 
@@ -100,17 +100,10 @@ test_system_ro_shorthand() {
   [[ "$out" == "hi" ]] && ok "system-ro + rw works end-to-end" || fail "got '$out'"
 }
 
-test_hide_alias() {
-  echo "test: --hide is accepted (alias of old --deny)"
+test_hide_on_missing_path_noop() {
+  echo "test: --hide on a nonexistent path is a no-op"
   "$BIN" --hide "$TMP/nowhere" -- "$TRUE"
-  [[ $? -eq 0 ]] && ok "--hide accepted" || fail "wrong exit"
-}
-
-test_legacy_flag_aliases() {
-  echo "test: --allow-rw/--allow-ro/--deny still work (backwards compat)"
-  rm -rf "$TMP/legacy"
-  "$BIN" --best-effort --allow-rw "$TMP/legacy" --allow-ro /usr --deny "$TMP/x" -- "$TRUE"
-  [[ $? -eq 0 && -d "$TMP/legacy" ]] && ok "legacy aliases work" || fail "rc=$?"
+  [[ $? -eq 0 ]] && ok "--hide ignored missing path" || fail "wrong exit"
 }
 
 test_help_exits_0
@@ -119,13 +112,12 @@ test_missing_command
 test_unknown_flag
 test_passthrough_exit_code
 test_stdout_passthrough
-test_allow_rw_creates_dir
-test_allow_rw_child_can_write
+test_rw_creates_dir
+test_rw_child_can_write
 test_cwd_flag
 test_ro_without_landlock_errors_loudly
 test_best_effort_degrades_gracefully
 test_system_ro_shorthand
-test_hide_alias
-test_legacy_flag_aliases
+test_hide_on_missing_path_noop
 
 summary_and_exit

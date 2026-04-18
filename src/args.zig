@@ -14,9 +14,6 @@
 //!   --cwd PATH    working directory for the child
 //!   --best-effort don't fail if a requested protection isn't available
 //!                 on the host; warn on stderr and continue
-//!
-//! The old names (--allow-rw / --allow-ro / --deny) are accepted as hidden
-//! aliases so an existing muscle memory keeps working.
 
 const std = @import("std");
 const mem = std.mem;
@@ -86,11 +83,11 @@ pub fn parse(arena: Allocator, argv: []const [:0]const u8) Error!Parsed {
         } else if (mem.eql(u8, arg, "--gid")) {
             const v = try takeValue(argv, &i);
             gid = std.fmt.parseInt(u32, v, 10) catch return error.InvalidNumber;
-        } else if (mem.eql(u8, arg, "--hide") or mem.eql(u8, arg, "--deny")) {
+        } else if (mem.eql(u8, arg, "--hide")) {
             try hide.append(arena, try takeValue(argv, &i));
-        } else if (mem.eql(u8, arg, "--rw") or mem.eql(u8, arg, "--allow-rw")) {
+        } else if (mem.eql(u8, arg, "--rw")) {
             try rw.append(arena, try takeValue(argv, &i));
-        } else if (mem.eql(u8, arg, "--ro") or mem.eql(u8, arg, "--allow-ro")) {
+        } else if (mem.eql(u8, arg, "--ro")) {
             try ro.append(arena, try takeValue(argv, &i));
         } else if (mem.eql(u8, arg, "--system-ro")) {
             for (SYSTEM_RO_PATHS) |p| try ro.append(arena, p);
@@ -157,25 +154,6 @@ test "parse rw/ro/hide" {
     try std.testing.expectEqual(@as(usize, 2), parsed.rw.len);
     try std.testing.expectEqual(@as(usize, 1), parsed.ro.len);
     try std.testing.expectEqualStrings("/data/work", parsed.rw[0]);
-}
-
-test "legacy aliases still parse" {
-    const a = std.testing.allocator;
-    var arena_state = std.heap.ArenaAllocator.init(a);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    const argv = [_][:0]const u8{
-        "agent-jail",
-        "--deny",     "/data",
-        "--allow-rw", "/work",
-        "--allow-ro", "/usr",
-        "--",         "/bin/true",
-    };
-    const parsed = try parse(arena, &argv);
-    try std.testing.expectEqual(@as(usize, 1), parsed.hide.len);
-    try std.testing.expectEqual(@as(usize, 1), parsed.rw.len);
-    try std.testing.expectEqual(@as(usize, 1), parsed.ro.len);
 }
 
 test "--system-ro expands to multiple paths" {
