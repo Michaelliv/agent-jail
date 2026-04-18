@@ -118,7 +118,7 @@ test_no_new_privs_set() {
   # 1 iff the flag is set. Required for landlock_restrict_self to succeed.
   if ! command -v perl >/dev/null; then skip "perl needed to probe prctl"; return; fi
   rm -rf "$TMP/wsp" && mkdir -p "$TMP/wsp"
-  out=$(uj --rw "$TMP/wsp" \
+  out=$(uj --rw "$TMP/wsp" --ro /dev \
     -- /usr/bin/perl -e 'print(syscall(157, 39) == 1 ? "set" : "unset")' 2>&1)
   [[ "$out" == "set" ]] && ok "NO_NEW_PRIVS=1" || fail "got '$out'"
 }
