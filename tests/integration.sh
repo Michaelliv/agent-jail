@@ -71,8 +71,15 @@ test_cwd_flag() {
   [[ "$out" == "$TMP" || "$out" == "/private$TMP" ]] && ok "got '$out'" || fail "got '$out'"
 }
 
-test_ro_without_landlock_errors_loudly() {
-  echo "test: --ro without Landlock is a loud error (no --best-effort)"
+test_ro_without_kernel_enforcement_errors_loudly() {
+  echo "test: --ro without a kernel mechanism is a loud error (no --best-effort)"
+  # Skip when the host has a kernel mechanism that can enforce --ro:
+  # Landlock on Linux, the Sandbox kext on macOS. On those hosts --ro
+  # succeeds, which is the correct behavior, not a failure mode worth testing.
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    skip "macOS has the Sandbox kext — --ro is enforced, no error to test"
+    return
+  fi
   if [[ "$(uname -s)" == "Linux" ]] && [[ -r /sys/kernel/security/lsm ]] \
      && grep -q landlock /sys/kernel/security/lsm; then
     skip "host has Landlock — this test only meaningful without it"
@@ -80,7 +87,7 @@ test_ro_without_landlock_errors_loudly() {
   fi
   out=$("$BIN" --ro /usr -- "$TRUE" 2>&1)
   rc=$?
-  if [[ $rc -eq 1 ]] && echo "$out" | grep -q "requires Landlock"; then
+  if [[ $rc -eq 1 ]] && echo "$out" | grep -q "needs Landlock"; then
     ok "errored loudly (rc=1, clear message)"
   else
     fail "rc=$rc out='$out'"
@@ -116,7 +123,7 @@ test_stdout_passthrough
 test_rw_creates_dir
 test_rw_child_can_write
 test_cwd_flag
-test_ro_without_landlock_errors_loudly
+test_ro_without_kernel_enforcement_errors_loudly
 test_best_effort_degrades_gracefully
 test_system_ro_shorthand
 test_hide_on_missing_path_noop
