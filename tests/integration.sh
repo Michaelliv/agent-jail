@@ -50,7 +50,7 @@ test_stdout_passthrough() {
 test_allow_rw_creates_dir() {
   echo "test: --allow-rw creates the dir with mode 0700"
   rm -rf "$TMP/wsp"
-  "$BIN" --allow-rw "$TMP/wsp" -- "$SH" -c "echo data > $TMP/wsp/x && cat $TMP/wsp/x" >/dev/null
+  "$BIN" --allow-rw "$TMP/wsp" $(landlock_system_ro) -- "$SH" -c "echo data > $TMP/wsp/x && cat $TMP/wsp/x" >/dev/null
   if [[ ! -d "$TMP/wsp" ]]; then fail "dir not created"; return; fi
   m=$(mode_of "$TMP/wsp")
   [[ "$m" == "700" ]] && ok "mode 0700" || fail "mode is $m"
@@ -59,7 +59,7 @@ test_allow_rw_creates_dir() {
 test_allow_rw_child_can_write() {
   echo "test: child writes into --allow-rw dir succeed"
   rm -rf "$TMP/wsp2"
-  out=$("$BIN" --allow-rw "$TMP/wsp2" -- "$SH" -c "echo content > $TMP/wsp2/file && cat $TMP/wsp2/file")
+  out=$("$BIN" --allow-rw "$TMP/wsp2" $(landlock_system_ro) -- "$SH" -c "echo content > $TMP/wsp2/file && cat $TMP/wsp2/file")
   [[ "$out" == "content" ]] && ok "wrote and read" || fail "got '$out'"
 }
 

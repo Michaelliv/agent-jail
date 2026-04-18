@@ -53,7 +53,7 @@ test_allow_rw_preexisting_symlink_to_dir() {
   mkdir -p "$TMP/real"
   ln -sfn "$TMP/real" "$TMP/linkdir"
   real_mode_before=$(mode_of "$TMP/real")
-  "$BIN" --allow-rw "$TMP/linkdir" -- "$TRUE" 2>/dev/null
+  "$BIN" --allow-rw "$TMP/linkdir" $(landlock_system_ro) -- "$TRUE" 2>/dev/null
   rc=$?
   real_mode_after=$(mode_of "$TMP/real")
   if [[ $rc -eq 0 ]]; then
@@ -71,7 +71,7 @@ test_deny_prefix_of_allow() {
   echo "test: --deny /X --allow-rw /X/sub → X is deny, sub is allow"
   rm -rf "$TMP/top"
   mkdir -p "$TMP/top"
-  "$BIN" --deny "$TMP/top" --allow-rw "$TMP/top/sub" -- "$TRUE"
+  "$BIN" --deny "$TMP/top" --allow-rw "$TMP/top/sub" $(landlock_system_ro) -- "$TRUE"
   rc=$?
   [[ $rc -eq 0 ]] || { fail "exit $rc"; return; }
   top_mode=$(mode_of "$TMP/top")
@@ -86,7 +86,7 @@ test_deny_prefix_of_allow() {
 test_same_path_in_deny_and_allow() {
   echo "test: --deny /X --allow-rw /X (same path) — allow wins (later in code)"
   mkdir -p "$TMP/both"
-  "$BIN" --deny "$TMP/both" --allow-rw "$TMP/both" -- "$TRUE"
+  "$BIN" --deny "$TMP/both" --allow-rw "$TMP/both" $(landlock_system_ro) -- "$TRUE"
   rc=$?
   [[ $rc -eq 0 ]] && ok "no crash, no error (defined behavior)" || fail "exit $rc"
 }
@@ -171,7 +171,7 @@ test_path_with_spaces() {
   echo "test: --allow-rw path containing spaces"
   p="$TMP/with space/more space"
   rm -rf "$TMP/with space"
-  "$BIN" --allow-rw "$p" -- "$TRUE"
+  "$BIN" --allow-rw "$p" $(landlock_system_ro) -- "$TRUE"
   [[ -d "$p" ]] && ok "dir created" || fail "not created"
 }
 
@@ -179,7 +179,7 @@ test_path_with_unicode() {
   echo "test: --allow-rw path with unicode"
   p="$TMP/café_🔒"
   rm -rf "$p"
-  "$BIN" --allow-rw "$p" -- "$TRUE"
+  "$BIN" --allow-rw "$p" $(landlock_system_ro) -- "$TRUE"
   [[ -d "$p" ]] && ok "unicode dir created" || fail "not created"
 }
 
@@ -188,7 +188,7 @@ test_very_long_path() {
   long=$(printf 'a%.0s' {1..200})
   p="$TMP/$long/$long"
   rm -rf "$TMP/$long"
-  "$BIN" --allow-rw "$p" -- "$TRUE"
+  "$BIN" --allow-rw "$p" $(landlock_system_ro) -- "$TRUE"
   [[ -d "$p" ]] && ok "long path handled" || fail "not created"
 }
 
@@ -196,7 +196,7 @@ test_many_allow_rw_flags() {
   echo "test: 100 --allow-rw flags work"
   args=()
   for i in $(seq 1 100); do args+=(--allow-rw "$TMP/d$i"); done
-  "$BIN" "${args[@]}" -- "$TRUE"
+  "$BIN" "${args[@]}" $(landlock_system_ro) -- "$TRUE"
   [[ -d "$TMP/d100" ]] && ok "100 dirs created" || fail "missing some"
 }
 
@@ -207,7 +207,7 @@ test_concurrent_invocations() {
   rm -rf "$TMP/conc"
   pids=()
   for i in 1 2 3 4 5; do
-    "$BIN" --allow-rw "$TMP/conc/d$i" -- "$SH" -c "sleep 0.3; echo ok > $TMP/conc/d$i/file" &
+    "$BIN" --allow-rw "$TMP/conc/d$i" $(landlock_system_ro) -- "$SH" -c "sleep 0.3; echo ok > $TMP/conc/d$i/file" &
     pids+=($!)
   done
   for p in "${pids[@]}"; do wait "$p"; done

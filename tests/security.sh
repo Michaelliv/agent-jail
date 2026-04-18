@@ -71,7 +71,7 @@ test_repeated_flags_last_wins_for_scalars() {
 test_repeated_deny_accumulate() {
   echo "test: repeated --allow-rw all get applied"
   rm -rf "$TMP/a" "$TMP/b" "$TMP/c"
-  "$BIN" --allow-rw "$TMP/a" --allow-rw "$TMP/b" --allow-rw "$TMP/c" -- "$TRUE"
+  "$BIN" --allow-rw "$TMP/a" --allow-rw "$TMP/b" --allow-rw "$TMP/c" $(landlock_system_ro) -- "$TRUE"
   [[ -d "$TMP/a" && -d "$TMP/b" && -d "$TMP/c" ]] && ok "all 3 dirs created" || fail "missing dirs"
 }
 
@@ -124,7 +124,7 @@ test_stdin_passthrough() {
 test_allow_rw_owner_when_no_uid_switch() {
   echo "test: --allow-rw without --uid leaves owner as caller"
   rm -rf "$TMP/wsp"
-  "$BIN" --allow-rw "$TMP/wsp" -- "$TRUE"
+  "$BIN" --allow-rw "$TMP/wsp" $(landlock_system_ro) -- "$TRUE"
   owner=$(owner_of "$TMP/wsp")
   caller=$(id -u)
   [[ "$owner" == "$caller" ]] && ok "owned by caller ($owner)" || fail "owner=$owner expected=$caller"
@@ -135,7 +135,7 @@ test_allow_rw_pre_existing_keeps_contents() {
   rm -rf "$TMP/wsp"
   mkdir -p "$TMP/wsp"
   echo "before" > "$TMP/wsp/file"
-  "$BIN" --allow-rw "$TMP/wsp" -- "$TRUE"
+  "$BIN" --allow-rw "$TMP/wsp" $(landlock_system_ro) -- "$TRUE"
   out=$(cat "$TMP/wsp/file")
   [[ "$out" == "before" ]] && ok "contents preserved" || fail "lost contents"
 }
@@ -143,14 +143,14 @@ test_allow_rw_pre_existing_keeps_contents() {
 test_allow_rw_nested_creates_parents() {
   echo "test: --allow-rw on nested path creates the chain"
   rm -rf "$TMP/a"
-  "$BIN" --allow-rw "$TMP/a/b/c/d" -- "$TRUE"
+  "$BIN" --allow-rw "$TMP/a/b/c/d" $(landlock_system_ro) -- "$TRUE"
   [[ -d "$TMP/a/b/c/d" ]] && ok "deep dir created" || fail "not created"
 }
 
 test_allow_rw_mode_is_0700() {
   echo "test: --allow-rw dir ends up with mode 0700"
   rm -rf "$TMP/wsp"
-  "$BIN" --allow-rw "$TMP/wsp" -- "$TRUE"
+  "$BIN" --allow-rw "$TMP/wsp" $(landlock_system_ro) -- "$TRUE"
   m=$(mode_of "$TMP/wsp")
   [[ "$m" == "700" ]] && ok "mode 0700" || fail "mode is $m"
 }
@@ -163,7 +163,7 @@ test_allow_rw_symlink_to_outside() {
   echo "important" > "$TMP/victim"
   before_mode=$(mode_of "$TMP/victim")
   ln -s "$TMP/victim" "$TMP/link"
-  "$BIN" --allow-rw "$TMP/link" -- "$TRUE" 2>/dev/null
+  "$BIN" --allow-rw "$TMP/link" $(landlock_system_ro) -- "$TRUE" 2>/dev/null
   rc=$?
   after_mode=$(mode_of "$TMP/victim")
   if [[ "$before_mode" != "$after_mode" ]]; then
@@ -222,7 +222,7 @@ test_uid_drop_blocks_workspace_escape() {
   rm -rf "$TMP/secret" "$TMP/wsp"
   mkdir -p "$TMP/secret"
   echo "do-not-touch" > "$TMP/secret/important"
-  "$BIN" --uid "$uid" --deny "$TMP/secret" --allow-rw "$TMP/wsp" \
+  "$BIN" --uid "$uid" --deny "$TMP/secret" --allow-rw "$TMP/wsp" $(landlock_system_ro) \
     -- "$SH" -c "echo allowed > $TMP/wsp/ok; echo pwn3d > $TMP/secret/important" 2>/dev/null
   if [[ -f "$TMP/wsp/ok" ]] && grep -q "do-not-touch" "$TMP/secret/important"; then
     ok "workspace writable, deny dir untouched"
