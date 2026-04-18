@@ -16,11 +16,13 @@ trap 'rm -rf "$TMP" 2>/dev/null' EXIT
 is_darwin() { [[ "$(uname -s)" == "Darwin" ]]; }
 is_linux()  { [[ "$(uname -s)" == "Linux"  ]]; }
 
-# ── 1. Path canonicalization — Linux ────────────────────────────────
+# ── 1. Path canonicalization ───────────────────────────────────────
 #
-# /a/../b and /b are different syntactic paths; Landlock matches the
-# canonical path. The kernel resolves the parent-fd we hand it before
-# checking rules, so both forms should behave identically. We pin that.
+# /X/../X and /X are different syntactic paths. The kernel opens the
+# path via O_PATH before installing the rule, which collapses dotdot
+# components, so both forms behave identically. Pin that so a future
+# caller who writes the non-canonical form doesn't get a silent sandbox
+# with no rule installed.
 
 test_dotdot_in_rw_path() {
   echo "test: --rw /TMP/x/../x is equivalent to --rw /TMP/x"
@@ -147,15 +149,6 @@ test_closerange_fallback_works() {
     fail "too many FDs: '$out'"
   fi
 }
-
-# ── 6. suid-root binary ────────────────────────────────────────────
-#
-# If someone installs agent-jail suid-root (a bad idea — --uid becomes a
-# generic uid-setter for any user on the host), behavior must at least be
-# predictable. We don't endorse this use; pin what happens.
-
-# Skipped: requires chown-to-root which needs root to set up. Documented
-# in the threat-model section of README instead.
 
 # ── 7. stdin EOF ───────────────────────────────────────────────────
 

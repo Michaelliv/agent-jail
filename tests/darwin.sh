@@ -110,6 +110,29 @@ test_stdout_passthrough() {
   [[ "$out" == "hello sandbox" ]] && ok "got '$out'" || fail "got '$out'"
 }
 
+# ── Known limitation: no PID-namespace equivalent on macOS ─────────
+#
+# XNU has no analogue of Linux PID namespaces, so background processes
+# the sandboxed child forks can outlive the agent-jail invocation. We
+# pin this as a known boundary of the macOS backend so a reviewer reads
+# the behavior intentionally instead of mistaking it for a bug.
+
+test_known_limit_background_process_outlives_parent() {
+  echo "test: [known macOS limit] backgrounded child survives agent-jail exit"
+  marker="ajdarwin-limit-$$-$RANDOM"
+  "$BIN" --rw "$TMP" -- \
+    "$SH" -c "exec -a $marker /bin/sleep 30 &" >/dev/null 2>&1
+  sleep 0.5
+  if pgrep -f "$marker" >/dev/null 2>&1; then
+    # Expected: child survived. Clean up and pass.
+    pkill -f "$marker" 2>/dev/null
+    ok "confirmed: macOS has no PID-namespace, background children outlive agent-jail"
+  else
+    # Unexpected: either XNU changed or we acquired PID-ns somehow.
+    fail "unexpected: background child did NOT outlive agent-jail"
+  fi
+}
+
 # ── Run all ─────────────────────────────────────────────────────────
 
 test_hide_blocks_read
@@ -121,5 +144,6 @@ test_realpath_resolves_tmp
 test_exit_code_propagates
 test_signal_propagates
 test_stdout_passthrough
+test_known_limit_background_process_outlives_parent
 
 summary_and_exit

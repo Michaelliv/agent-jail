@@ -117,23 +117,6 @@ zig build -Dtarget=aarch64-macos      -Doptimize=ReleaseSmall
 
 Requires Zig 0.16+. Single static binary ~215 KB stripped, no runtime deps.
 
-## Threat model
-
-agent-jail assumes:
-
-- The host kernel correctly enforces POSIX permissions AND (when used)
-  Landlock path rules. I.e. the kernel is not compromised.
-- The sandboxed subprocess cannot acquire `CAP_DAC_OVERRIDE`,
-  `CAP_FOWNER`, or equivalent. uid switch guarantees this by dropping to
-  an unprivileged uid; Landlock guarantees this via `PR_SET_NO_NEW_PRIVS`.
-- setuid binaries the sandbox can exec cannot be used to escalate.
-  `PR_SET_NO_NEW_PRIVS` (set by the Landlock path) makes this
-  kernel-enforced. uid-switch alone does NOT set `PR_SET_NO_NEW_PRIVS`,
-  so if you rely only on uid switch, make sure the sandbox can't reach a
-  vulnerable setuid binary.
-
-No assumptions about kernel version or container runtime.
-
 ## Tests
 
 ```
@@ -143,7 +126,7 @@ zig build test                              # unit (Zig)
 ./tests/harder.sh                           # 18 adversarial (4 root-only)
 ./tests/landlock.sh                         # 11 Landlock-backend probes
 ./tests/pidns.sh                            # 4 PID-namespace probes (Linux only)
-./tests/darwin.sh                           # 9 Sandbox-kext probes (macOS only)
+./tests/darwin.sh                           # 10 Sandbox-kext probes (macOS only)
 ./tests/edge.sh                             # 17 edge cases: SBPL injection,
                                             #   dotdot paths, stdin/stdout
                                             #   size, fork-bomb reaping,
