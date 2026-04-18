@@ -12,9 +12,9 @@
 //! The user namespace is what makes this work without root: an
 //! unprivileged unshare(CLONE_NEWUSER) grants CAP_SYS_ADMIN inside the
 //! new namespace, which is what CLONE_NEWPID and the /proc remount need.
-//! On distros that disable unprivileged user namespaces (some hardened
-//! Debian/RHEL) the unshare returns EPERM; the caller should degrade
-//! under --best-effort.
+//! On hosts that disable unprivileged user namespaces or restrict
+//! uid_map writes, the layer can't be set up; `probe()` detects this
+//! up front so the caller never commits to a half-broken namespace.
 
 const std = @import("std");
 const builtin = @import("builtin");
