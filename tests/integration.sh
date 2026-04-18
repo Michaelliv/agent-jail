@@ -18,9 +18,10 @@ test_help_exits_0() {
 }
 
 test_version() {
-  echo "test: --version prints version"
+  echo "test: --version matches build.zig.zon"
+  zon_ver=$(grep -oE '\.version = "[0-9]+\.[0-9]+\.[0-9]+[^"]*"' "$DIR/../build.zig.zon" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+[^"]*')
   out=$("$BIN" --version)
-  [[ "$out" == "agent-jail 0.1.0" ]] && ok "got '$out'" || fail "got '$out'"
+  [[ "$out" == "agent-jail $zon_ver" ]] && ok "got '$out'" || fail "got '$out' expected 'agent-jail $zon_ver'"
 }
 
 test_missing_command() {
