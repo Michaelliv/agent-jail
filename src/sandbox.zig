@@ -212,8 +212,11 @@ pub fn spawnAndWait(gpa: std.mem.Allocator, args: Args.Parsed, ids: Ids, plan: P
 /// the intermediate enters the namespace, forks the real child, then waits
 /// and re-exits with the child's status.
 ///
-/// If unshare fails and --best-effort is set, fall through to a normal
-/// (non-PID-isolated) child setup. Without --best-effort, abort.
+/// PID-ns is an implicit layer that agent-jail adds whenever any other
+/// sandbox flags were given on Linux — the user didn't explicitly request
+/// it, so its failure is implicitly best-effort: warn on stderr, then run
+/// the child with the remaining (non-PID-isolated) layers. Distros that
+/// disable unprivileged user namespaces still get filesystem isolation.
 fn runIntermediate(
     args: Args.Parsed,
     ids: Ids,
@@ -221,17 +224,17 @@ fn runIntermediate(
     argvz: []?[*:0]const u8,
 ) noreturn {
     pidns.enter() catch |err| {
-        if (args.best_effort) {
-            writeStderr("agent-jail: warning: PID-namespace isolation unavailable; continuing without it\n");
-            childSetup(args, ids, cwdz);
-            _ = c.execvp(argvz[0].?, argvz.ptr);
-            writeStderr("agent-jail: exec failed\n");
-            c.exit(127);
-        }
-        var msg_buf: [128]u8 = undefined;
-        const msg = std.fmt.bufPrint(&msg_buf, "agent-jail: pidns.enter failed: {s}\n", .{@errorName(err)}) catch "agent-jail: pidns.enter failed\n";
+        var msg_buf: [160]u8 = undefined;
+        const msg = std.fmt.bufPrint(
+            &msg_buf,
+            "agent-jail: warning: PID-namespace isolation unavailable ({s}); continuing without it\n",
+            .{@errorName(err)},
+        ) catch "agent-jail: warning: PID-namespace isolation unavailable\n";
         writeStderr(msg);
-        c.exit(1);
+        childSetup(args, ids, cwdz);
+        _ = c.execvp(argvz[0].?, argvz.ptr);
+        writeStderr("agent-jail: exec failed\n");
+        c.exit(127);
     };
 
     const inner = c.fork();
