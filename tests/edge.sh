@@ -150,7 +150,7 @@ test_closerange_fallback_works() {
   fi
 }
 
-# ── 7. stdin EOF ───────────────────────────────────────────────────
+# ── 6. stdin EOF ───────────────────────────────────────────────────
 
 test_stdin_eof_reaches_child() {
   echo "test: stdin EOF closes cleanly; child sees end-of-input"
@@ -165,7 +165,7 @@ test_stdin_large_data() {
   [[ "$actual" -eq "$expected" ]] && ok "1MB stdin round-tripped" || fail "got $actual, expected $expected"
 }
 
-# ── 8. Fork-bomb containment (PID-ns) ───────────────────────────────
+# ── 7. Fork-bomb containment (PID-ns) ───────────────────────────────
 
 test_fork_bomb_reaped_on_exit() {
   if ! is_linux; then skip "Linux PID-ns feature"; return; fi
@@ -194,7 +194,7 @@ test_fork_bomb_reaped_on_exit() {
   fi
 }
 
-# ── 9. Large stdout drains without pipe-full hang ──────────────────
+# ── 8. Large stdout drains without pipe-full hang ──────────────────
 
 test_large_stdout_does_not_hang() {
   echo "test: child writing 10 MB to stdout doesn't deadlock parent"
@@ -213,7 +213,7 @@ test_large_stdout_does_not_hang() {
   fi
 }
 
-# ── 10. --best-effort is not infectious ─────────────────────────────
+# ── 9. --best-effort is not infectious ──────────────────────────────
 #
 # Without --best-effort, requested protections that can't be delivered
 # are fatal. Make sure --best-effort doesn't silently leak through when
@@ -229,7 +229,7 @@ test_best_effort_still_runs_layers_that_work() {
   [[ $rc -eq 0 && -d "$TMP/wspBE" ]] && ok "setup happened under --best-effort" || fail "rc=$rc"
 }
 
-# ── 11. Quote escape is symmetric ──────────────────────────────────
+# ── 10. Quote escape is symmetric ─────────────────────────────────
 
 test_quote_escape_roundtrip() {
   if ! is_darwin; then skip "macOS-specific quoting behavior"; return; fi
@@ -246,7 +246,7 @@ test_quote_escape_roundtrip() {
   [[ "$out" == "MARKER" ]] && ok "weird path survived escape" || fail "got '$out'"
 }
 
-# ── 12. --ro on a file (not a dir) ──────────────────────────────────
+# ── 11. --ro on a file (not a dir) ──────────────────────────────────
 
 test_ro_on_regular_file() {
   echo "test: --ro on a regular file (not dir) works"
@@ -264,7 +264,7 @@ test_ro_on_regular_file() {
   fi
 }
 
-# ── 13. Empty workspace + immediate exit ────────────────────────────
+# ── 12. Empty workspace + immediate exit ────────────────────────────
 
 test_immediate_exit_no_leaks() {
   echo "test: agent-jail with no command work returns promptly"
