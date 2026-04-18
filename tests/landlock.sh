@@ -114,12 +114,18 @@ test_descendants_also_restricted() {
 
 test_no_new_privs_set() {
   echo "test: sandboxed child has PR_SET_NO_NEW_PRIVS=1"
-  # PR_GET_NO_NEW_PRIVS is prctl option 39. syscall(SYS_prctl=157, 39) returns
-  # 1 iff the flag is set. Required for landlock_restrict_self to succeed.
+  # PR_GET_NO_NEW_PRIVS is prctl option 39. prctl(2) requires arg2..arg5 = 0,
+  # or it returns -EINVAL — so pass all six args explicitly to perl's syscall.
+  # (prctl is syscall 157 on x86_64, 167 on aarch64.)
   if ! command -v perl >/dev/null; then skip "perl needed to probe prctl"; return; fi
+  case "$(uname -m)" in
+    x86_64) nr_prctl=157 ;;
+    aarch64|arm64) nr_prctl=167 ;;
+    *) skip "prctl syscall number unknown on $(uname -m)"; return ;;
+  esac
   rm -rf "$TMP/wsp" && mkdir -p "$TMP/wsp"
   out=$(uj --rw "$TMP/wsp" --ro /dev \
-    -- /usr/bin/perl -e 'print(syscall(157, 39) == 1 ? "set" : "unset")' 2>&1)
+    -- /usr/bin/perl -e "print(syscall($nr_prctl, 39, 0, 0, 0, 0) == 1 ? 'set' : 'unset')" 2>&1)
   [[ "$out" == "set" ]] && ok "NO_NEW_PRIVS=1" || fail "got '$out'"
 }
 
