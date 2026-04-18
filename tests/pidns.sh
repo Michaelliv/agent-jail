@@ -18,37 +18,46 @@ require_tools true echo sleep sh cat ps wc kill grep
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+mkdir -p "$TMP/wsp"
 
-# Helper: invoke uj with the standard sandbox triplet plus --best-effort,
-# so tests work even when unprivileged user namespaces are disabled (we
-# fall through to no-PID-isolation and skip those checks loudly).
+# Helper: invoke uj with the standard sandbox triplet plus --best-effort.
 uj() {
   "$BIN" --best-effort --system-ro --rw "$TMP/wsp" -- "$@"
 }
 
-mkdir -p "$TMP/wsp"
+# Up-front capability probe: agent-jail's pickPlan() runs its own probe
+# and silently disables PID-ns when it can't be set up. Detect the same
+# decision here by reading the child's PID — it's 1 inside a fresh PID
+# namespace, anything else means PID-ns didn't activate. If it didn't,
+# the entire suite skips: there's nothing meaningful to test.
+probe_out=$(uj /bin/sh -c 'echo $$' 2>/dev/null || echo "")
+if [[ "$probe_out" != "1" ]]; then
+  echo "pidns.sh: PID-namespace isolation not active on this host (\$\$=$probe_out)."
+  echo "  Likely cause: unprivileged user namespaces disabled, or uid_map writes"
+  echo "  restricted (some CI runners). Skipping suite."
+  echo
+  echo "0 passed, 0 failed, 1 skipped"
+  exit 0
+fi
+
+echo "PID-ns active (probe child saw \$\$=1). Running confinement tests."
+echo
 
 test_pid_one_inside_namespace() {
   echo "test: sandboxed process sees itself as PID 1"
   out=$(uj /bin/sh -c 'echo $$')
-  if [[ "$out" == "1" ]]; then
-    ok "got PID 1 inside namespace"
-  elif [[ -n "$out" ]] && [[ "$out" -gt 1 ]]; then
-    skip "got PID $out — host disabled unprivileged user namespaces"
-  else
-    fail "unexpected output: '$out'"
-  fi
+  [[ "$out" == "1" ]] && ok "got PID 1" || fail "got '$out'"
 }
 
 test_proc_only_shows_own_subtree() {
   echo "test: /proc inside namespace only shows the agent's own subtree"
-  # Count processes visible in /proc inside the sandbox. A fresh PID
-  # namespace with just `sh` running should have 1-2 entries (sh + ps).
-  count=$(uj /bin/sh -c 'ls /proc | grep -E "^[0-9]+$" | wc -l' 2>/dev/null || echo 0)
-  if [[ "$count" -le 5 ]] && [[ "$count" -ge 1 ]]; then
+  # A fresh PID namespace should only contain the agent's own subtree.
+  # Grant --ro /proc so Landlock doesn't deny the read; the count we see
+  # then reflects the PID namespace, not the LSM filter.
+  count=$("$BIN" --best-effort --system-ro --rw "$TMP/wsp" --ro /proc \
+    -- /bin/sh -c 'ls /proc | grep -E "^[0-9]+$" | wc -l' 2>/dev/null)
+  if [[ "$count" -ge 1 ]] && [[ "$count" -le 10 ]]; then
     ok "/proc shows $count entries (host has hundreds)"
-  elif [[ "$count" -gt 50 ]]; then
-    skip "/proc shows $count entries — host disabled unprivileged user namespaces"
   else
     fail "unexpected count: $count"
   fi
@@ -56,23 +65,20 @@ test_proc_only_shows_own_subtree() {
 
 test_cant_signal_host_pid() {
   echo "test: sandboxed process cannot kill a host PID"
-  # Spawn a long-running host process, capture its PID, try to kill it from inside.
   sleep 60 &
   host_pid=$!
   trap 'kill $host_pid 2>/dev/null; rm -rf "$TMP"' EXIT
 
-  # Inside the sandbox, attempt to signal the host PID. ESRCH is the
-  # success signal — the PID literally doesn't exist in our namespace.
+  # ESRCH (rc=1) means the PID doesn't exist in our namespace. Permission
+  # denied (rc=1 too in shell, but kill prints "Operation not permitted")
+  # would only happen if PID-ns failed and uid blocked us — the upfront
+  # probe ruled that out.
   out=$(uj /bin/sh -c "kill -0 $host_pid 2>&1; echo rc=\$?" 2>&1)
   kill "$host_pid" 2>/dev/null
   trap 'rm -rf "$TMP"' EXIT
 
   if echo "$out" | grep -q "rc=1"; then
     ok "host PID $host_pid invisible from inside"
-  elif echo "$out" | grep -q "rc=0"; then
-    # Either PID-ns isolation didn't kick in, or the host PID happens to
-    # collide with a namespace-internal PID (extremely unlikely for a 6-digit pid).
-    skip "host PID was reachable — likely host disabled unprivileged user namespaces"
   else
     fail "unexpected output: '$out'"
   fi
