@@ -129,11 +129,13 @@ pub fn pickBackend(args: Args.Parsed) Backend {
 
 /// Full plan: filesystem/identity backend plus whether to enter a PID
 /// namespace. PID-ns activates whenever the user asked for any sandboxing
-/// (--rw/--ro/--uid) on Linux. The actual unshare may still fail at
-/// child-setup time on hardened distros; --best-effort handles that.
+/// (--rw/--ro/--uid) on Linux AND a pre-flight probe confirms unshare +
+/// uid_map writes succeed end-to-end. The probe avoids committing the
+/// real spawn to a double-fork flow on hosts where the namespace setup is
+/// half-broken (some CI runners, restricted containers).
 pub fn pickPlan(args: Args.Parsed) Plan {
     const backend = pickBackend(args);
-    const pid_isolation = backend != .none and pidns.isAvailable();
+    const pid_isolation = backend != .none and pidns.probe();
     return .{ .backend = backend, .pid_isolation = pid_isolation };
 }
 
@@ -212,11 +214,10 @@ pub fn spawnAndWait(gpa: std.mem.Allocator, args: Args.Parsed, ids: Ids, plan: P
 /// the intermediate enters the namespace, forks the real child, then waits
 /// and re-exits with the child's status.
 ///
-/// PID-ns is an implicit layer that agent-jail adds whenever any other
-/// sandbox flags were given on Linux — the user didn't explicitly request
-/// it, so its failure is implicitly best-effort: warn on stderr, then run
-/// the child with the remaining (non-PID-isolated) layers. Distros that
-/// disable unprivileged user namespaces still get filesystem isolation.
+/// `pickPlan` only sets `pid_isolation = true` after a successful probe,
+/// so reaching `pidns.enter` failure here is unexpected. Treat it as
+/// fatal: a half-set-up namespace is worse than no isolation, and the
+/// probe should have caught any environment that can't deliver it.
 fn runIntermediate(
     args: Args.Parsed,
     ids: Ids,
@@ -227,14 +228,11 @@ fn runIntermediate(
         var msg_buf: [160]u8 = undefined;
         const msg = std.fmt.bufPrint(
             &msg_buf,
-            "agent-jail: warning: PID-namespace isolation unavailable ({s}); continuing without it\n",
+            "agent-jail: pidns.enter failed after probe succeeded ({s})\n",
             .{@errorName(err)},
-        ) catch "agent-jail: warning: PID-namespace isolation unavailable\n";
+        ) catch "agent-jail: pidns.enter failed\n";
         writeStderr(msg);
-        childSetup(args, ids, cwdz);
-        _ = c.execvp(argvz[0].?, argvz.ptr);
-        writeStderr("agent-jail: exec failed\n");
-        c.exit(127);
+        c.exit(1);
     };
 
     const inner = c.fork();

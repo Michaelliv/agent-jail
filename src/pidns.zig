@@ -30,11 +30,40 @@ pub const Error = error{
     Unexpected,
 };
 
-/// True if PID-namespace isolation can plausibly be applied on this host.
-/// Available on Linux; everywhere else this returns false and the caller
-/// should skip the layer entirely.
-pub fn isAvailable() bool {
-    return builtin.os.tag == .linux;
+/// End-to-end probe: forks a disposable child that attempts the full
+/// `enter()` sequence and exits with its success. The parent returns
+/// `true` only if every step worked in the child — unshare, setgroups
+/// write, uid_map, gid_map, and the /proc remount.
+///
+/// Needed because some hosts allow unshare(CLONE_NEWUSER) but restrict
+/// uid_map writes (certain CI runners, some systemd-nspawn configs). A
+/// pre-flight probe here catches that before agent-jail commits to a
+/// double-fork flow that would land in a half-broken namespace.
+///
+/// The child exits without doing anything visible to the real workload;
+/// its transient namespace dies with it.
+pub fn probe() bool {
+    if (builtin.os.tag != .linux) return false;
+    const fork_rc = linux.fork();
+    const fork_sig: isize = @bitCast(fork_rc);
+    if (fork_sig < 0) return false;
+    const pid: i32 = @intCast(fork_sig);
+    if (pid == 0) {
+        enter() catch linux.exit_group(1);
+        linux.exit_group(0);
+    }
+    var status: u32 = 0;
+    while (true) {
+        const rc = linux.waitpid(pid, &status, 0);
+        if (errnoFrom(rc)) |e| {
+            if (e == .INTR) continue;
+            return false;
+        }
+        break;
+    }
+    // waitpid status is the raw wait(2) status: low 7 bits = signal,
+    // next 8 = exit code. We only care about a clean exit 0.
+    return (status & 0x7f) == 0 and ((status >> 8) & 0xff) == 0;
 }
 
 /// Enter a fresh user + mount + PID namespace. Must be called from the
@@ -116,11 +145,6 @@ fn writeIdMapNumeric(path: [*:0]const u8, inner: u32, outer: u32, count: u32) Er
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
-
-test "isAvailable matches platform" {
-    const expected = builtin.os.tag == .linux;
-    try std.testing.expectEqual(expected, isAvailable());
-}
 
 test "errnoFrom decodes negative as errno, non-negative as null" {
     if (builtin.os.tag != .linux) return error.SkipZigTest;
