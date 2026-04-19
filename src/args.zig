@@ -32,6 +32,14 @@ pub const Parsed = struct {
     hide: []const []const u8 = &.{},
     rw: []const []const u8 = &.{},
     ro: []const []const u8 = &.{},
+    /// `--list PATH` grants the sandbox permission to open PATH as a
+    /// directory handle (Landlock READ_DIR only) without granting any
+    /// file reads under it. Exists to satisfy runtimes that start with
+    /// `openat("/", O_DIRECTORY)` for cwd resolution — Bun, Node, DuckDB,
+    /// Python imports, Go's filepath.Walk — on hosts where Landlock is
+    /// the only available backend. On macOS the default-allow policy
+    /// already permits this; `--list` is a no-op there.
+    list: []const []const u8 = &.{},
     cwd: ?[]const u8 = null,
     best_effort: bool = false,
     command: []const []const u8 = &.{},
@@ -41,6 +49,7 @@ pub fn parse(arena: Allocator, argv: []const [:0]const u8) Error!Parsed {
     var hide: std.ArrayList([]const u8) = .empty;
     var rw: std.ArrayList([]const u8) = .empty;
     var ro: std.ArrayList([]const u8) = .empty;
+    var list: std.ArrayList([]const u8) = .empty;
 
     var uid: ?u32 = null;
     var gid: ?u32 = null;
@@ -74,6 +83,8 @@ pub fn parse(arena: Allocator, argv: []const [:0]const u8) Error!Parsed {
             try rw.append(arena, try takeValue(argv, &i));
         } else if (mem.eql(u8, arg, "--ro")) {
             try ro.append(arena, try takeValue(argv, &i));
+        } else if (mem.eql(u8, arg, "--list")) {
+            try list.append(arena, try takeValue(argv, &i));
         } else if (mem.eql(u8, arg, "--system-ro")) {
             for (SYSTEM_RO_PATHS) |p| try ro.append(arena, p);
         } else if (mem.eql(u8, arg, "--cwd")) {
@@ -91,6 +102,7 @@ pub fn parse(arena: Allocator, argv: []const [:0]const u8) Error!Parsed {
         .hide = hide.items,
         .rw = rw.items,
         .ro = ro.items,
+        .list = list.items,
         .cwd = cwd,
         .best_effort = best_effort,
         .command = command,

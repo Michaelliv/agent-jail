@@ -34,7 +34,7 @@ pub fn main(init: std.process.Init) !u8 {
             return 0;
         },
         error.VersionRequested => {
-            try stdout.writeAll("agent-jail 0.3.0\n");
+            try stdout.writeAll("agent-jail 0.4.0\n");
             try stdout.flush();
             return 0;
         },
@@ -110,8 +110,16 @@ fn printUsage(w: *std.Io.Writer) !void {
         \\                         missing, chmod'd to 0700, chown'd to --uid.
         \\  --ro PATH              Sandbox may read+execute under PATH.
         \\                         Enforced by Landlock only.
+        \\  --list PATH            Sandbox may open PATH as a directory handle
+        \\                         and list entries, but cannot read any file
+        \\                         under it. Typically `--list /` so runtimes
+        \\                         (Bun, Node, DuckDB) can resolve cwd without
+        \\                         exposing the host filesystem for reads.
+        \\                         No-op on macOS (default-allow covers it).
         \\  --hide PATH            Sandbox can't touch PATH. chmod 0700 under
-        \\                         uid-switch; no-op under Landlock (default-deny).
+        \\                         uid-switch; on Landlock the same effect is
+        \\                         obtained by simply not granting PATH (the
+        \\                         allowlist default-denies it).
         \\  --system-ro            Shorthand: --ro on standard system dirs
         \\                         (/usr /lib /lib64 /bin /sbin /etc /usr/sbin).
         \\                         Missing paths are skipped.

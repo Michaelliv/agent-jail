@@ -12,6 +12,16 @@
 //!   --rw PATH   →  (allow file-read* file-write* (subpath "<realpath>"))
 //!   --ro PATH   →  (allow file-read*             (subpath "<realpath>"))
 //!   --hide PATH →  (deny  file-read* file-write* (subpath "<realpath>"))
+//!   --list PATH →  no-op. On macOS, default-allow already permits
+//!                  `openat(PATH, O_DIRECTORY)`. The flag exists only
+//!                  for Linux parity; accepting it on both platforms
+//!                  lets callers write one set of arguments.
+//!
+//! Rule order matters on macOS too: deny rules go FIRST, then rw/ro
+//! carve out exceptions. SBPL evaluates later-wins for overlapping
+//! subpaths, so an allow at `/data/workspaces/japanika` correctly
+//! overrides a deny at `/data`. This order lets callers say
+//! `--hide /data --rw /data/workspaces/own` and get exactly that.
 //!
 //! `realpath(3)` is mandatory: the kernel matches against the resolved
 //! path, not the symlink. /tmp is a symlink to /private/tmp on every Mac,
@@ -44,6 +54,10 @@ pub const Policy = struct {
     rw: []const []const u8,
     ro: []const []const u8,
     hide: []const []const u8,
+    /// Accepted for cross-platform parity with Landlock's `--list`.
+    /// macOS doesn't need it — default-allow permits dir-handle opens
+    /// without a rule — so we render nothing.
+    list: []const []const u8 = &.{},
 };
 
 /// Render the policy as a Sandbox profile string. The caller owns the
@@ -53,12 +67,15 @@ pub fn renderProfile(arena: std.mem.Allocator, policy: Policy) Error![]const u8 
 
     try buf.appendSlice(arena, "(version 1)\n(allow default)\n");
 
-    // Order matters: hides go last so they win over any allow already in
-    // scope from "(allow default)". The kernel evaluates in order; later
-    // rules override earlier ones for overlapping subpaths.
+    // Order: hides first, then rw/ro carve out exceptions. SBPL
+    // evaluates in order and later rules override earlier ones for
+    // overlapping subpaths. So `--hide /data --rw /data/workspaces/own`
+    // renders deny-then-allow, and the nested allow wins for the own
+    // workspace while peers stay denied.
+    for (policy.hide) |p| try writeRule(arena, &buf, "deny", "file-read* file-write*", p);
     for (policy.rw) |p| try writeRule(arena, &buf, "allow", "file-read* file-write*", p);
     for (policy.ro) |p| try writeRule(arena, &buf, "allow", "file-read*", p);
-    for (policy.hide) |p| try writeRule(arena, &buf, "deny", "file-read* file-write*", p);
+    // `--list` is a no-op on macOS (see header comment).
 
     return buf.items;
 }

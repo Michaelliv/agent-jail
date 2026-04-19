@@ -8,7 +8,16 @@
 //! - Default-deny. The child can access nothing by default.
 //! - Each `--rw PATH` opens a hierarchy with read+write+exec rights.
 //! - Each `--ro PATH` opens a hierarchy with read+exec rights only.
-//! - `--hide` is a no-op here; default-deny already covers it.
+//! - Each `--list PATH` grants only READ_DIR — the child can `openat(PATH,
+//!   O_DIRECTORY)` and list entries but cannot read any file beneath it.
+//!   This is the minimum privilege that lets modern runtimes (Bun, Node,
+//!   DuckDB, Python, Go) resolve `/` as a directory handle without
+//!   exposing arbitrary file reads. Landlock is allowlist-only, so we
+//!   can't "deny read on /" — we can only avoid granting it. `--list /`
+//!   carves out exactly the one access bit those runtimes need.
+//! - `--hide` is a no-op here; default-deny already covers any path not
+//!   listed in `--rw`/`--ro`/`--list`. Callers who want a path hidden
+//!   must simply not grant it.
 //!
 //! The handled-access mask is trimmed to the kernel's supported ABI, so
 //! older kernels get reduced protection instead of an error.
@@ -62,6 +71,11 @@ pub const RW_ACCESS: u64 =
 /// Read-only set: read files, list dirs, execute.
 pub const RO_ACCESS: u64 =
     ACCESS_FS.EXECUTE | ACCESS_FS.READ_FILE | ACCESS_FS.READ_DIR;
+
+/// Dir-handle-only set: list entries under a directory, nothing else.
+/// Used by `--list` to satisfy `openat(PATH, O_DIRECTORY)` without
+/// granting any file reads. Kernel accepts a rule with only READ_DIR.
+pub const LIST_ACCESS: u64 = ACCESS_FS.READ_DIR;
 
 /// Subset of RW_ACCESS that applies to files (not dirs). landlock_add_rule
 /// returns EINVAL if dir-only bits are set on a file path.
@@ -165,6 +179,9 @@ pub const Policy = struct {
     rw: []const []const u8,
     /// Paths the sandboxed process may read+execute under (no write).
     ro: []const []const u8,
+    /// Paths the sandboxed process may open as a directory handle and
+    /// list entries on, but not read files under. Typically `["/"]`.
+    list: []const []const u8 = &.{},
 };
 
 /// Apply a Landlock policy to the current thread and its descendants.
@@ -199,6 +216,7 @@ pub fn apply(policy: Policy) Error!void {
 
     for (policy.rw) |p| try addPathRule(ruleset_fd, p, RW_ACCESS & handled);
     for (policy.ro) |p| try addPathRule(ruleset_fd, p, RO_ACCESS & handled);
+    for (policy.list) |p| try addPathRule(ruleset_fd, p, LIST_ACCESS & handled);
 
     if (prctl(PR_SET_NO_NEW_PRIVS, @as(c_int, 1), @as(c_int, 0), @as(c_int, 0), @as(c_int, 0)) != 0) {
         return error.PermissionDenied;

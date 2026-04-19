@@ -140,7 +140,8 @@ pub fn existingRoPaths(arena: std.mem.Allocator, ro: []const []const u8) ![]cons
 /// Decide which backend(s) apply given the CLI args and host capabilities.
 pub fn pickBackend(args: Args.Parsed) Backend {
     const wants_uid = args.uid != null;
-    const wants_paths = args.rw.len > 0 or args.ro.len > 0 or args.hide.len > 0;
+    const wants_paths = args.rw.len > 0 or args.ro.len > 0 or
+        args.hide.len > 0 or args.list.len > 0;
 
     if (!wants_uid and !wants_paths) return .none;
 
@@ -250,6 +251,7 @@ fn buildSandboxExecArgv(arena: std.mem.Allocator, args: Args.Parsed) Error![]con
         .rw = args.rw,
         .ro = args.ro,
         .hide = args.hide,
+        .list = args.list,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.PathTooLong => return error.PathTooLong,
@@ -366,21 +368,23 @@ fn childSetup(args: Args.Parsed, ids: Ids, cwdz: ?[*:0]const u8) void {
     }
 }
 
-/// Apply Landlock if --rw or --ro were given and the host supports it.
-/// Silent skip otherwise; the parent decided via pickBackend whether that
-/// was acceptable.
+/// Apply Landlock if --rw / --ro / --list were given and the host
+/// supports it. Silent skip otherwise; the parent decided via
+/// pickBackend whether that was acceptable.
 fn applyLandlockIfRequested(args: Args.Parsed) void {
     if (builtin.os.tag != .linux) return;
-    if (args.rw.len == 0 and args.ro.len == 0) return;
+    if (args.rw.len == 0 and args.ro.len == 0 and args.list.len == 0) return;
     if (!landlock.isAvailable()) return;
 
     var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena_state.deinit();
     const ro_existing = existingRoPaths(arena_state.allocator(), args.ro) catch args.ro;
+    const list_existing = existingRoPaths(arena_state.allocator(), args.list) catch args.list;
 
     landlock.apply(.{
         .rw = args.rw,
         .ro = ro_existing,
+        .list = list_existing,
     }) catch |err| {
         // Fatal: the caller asked for isolation we can't deliver.
         var msg_buf: [128]u8 = undefined;
