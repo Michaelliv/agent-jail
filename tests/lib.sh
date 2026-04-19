@@ -54,12 +54,18 @@ summary_and_exit() {
 #
 # Usage:  "$BIN" --rw "$TMP/wsp" $(landlock_system_ro) -- /bin/sh ...
 #
-# Prints the flags to stdout on Linux+Landlock hosts, empty otherwise.
+# Prints `--best-effort --system-ro` on Linux+Landlock hosts, empty
+# otherwise. --best-effort is mandatory: --system-ro expands to a fixed
+# list that includes /lib64, which is absent on non-x86_64 Linux (ARM
+# Ubuntu, for one). Without --best-effort, applyPermissions errors
+# FileNotFound before Landlock even engages, and every test using this
+# helper fails with a confusing "applyPermissions: FileNotFound".
+#
 # Using command substitution (not a bash array) sidesteps the `set -u`
 # "unbound variable" footgun that hits empty array expansions.
 landlock_system_ro() {
   if [[ "$(uname -s)" == "Linux" ]] && [[ -r /sys/kernel/security/lsm ]] \
      && grep -q landlock /sys/kernel/security/lsm; then
-    echo "--system-ro"
+    echo "--best-effort --system-ro"
   fi
 }

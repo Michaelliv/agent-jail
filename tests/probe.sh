@@ -78,6 +78,10 @@ echo
 # Every invocation gets --system-ro (for libc / ld.so on Linux) and --ro
 # PROBE_DIR (so Landlock lets the child exec the probe itself). Without
 # the latter, every test silently fails with EACCES on exec.
+#
+# --best-effort comes from landlock_system_ro on Linux; we add it
+# explicitly for macOS (where the helper emits nothing) so --ro is
+# tolerated consistently.
 run_probe() {
   local aj_args=()
   while [[ $# -gt 0 && "$1" != "--" ]]; do

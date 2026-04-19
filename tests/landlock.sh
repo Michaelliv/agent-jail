@@ -44,8 +44,12 @@ echo
 
 # Run agent-jail with --system-ro plus whatever extra args the caller
 # passes. Extra args come before the `--`.
+#
+# --best-effort is mandatory: --system-ro's path list includes /lib64
+# which is absent on non-x86_64 Linux. Without it, applyPermissions
+# errors FileNotFound before Landlock engages.
 uj() {
-  "$BIN" --system-ro "$@"
+  "$BIN" --best-effort --system-ro "$@"
 }
 
 # ── Happy path: --rw lets child write ──────────────────────────────
@@ -53,7 +57,9 @@ uj() {
 test_rw_child_can_write() {
   echo "test: child writes into --rw dir"
   rm -rf "$TMP/wsp" && mkdir -p "$TMP/wsp"
-  out=$(uj --rw "$TMP/wsp" -- "$SH" -c "echo hi > $TMP/wsp/x && cat $TMP/wsp/x" 2>&1)
+  # stderr to /dev/null: --best-effort may warn about missing /lib64 on
+  # non-x86_64 Linux, which would otherwise contaminate the exact-match.
+  out=$(uj --rw "$TMP/wsp" -- "$SH" -c "echo hi > $TMP/wsp/x && cat $TMP/wsp/x" 2>/dev/null)
   [[ "$out" == "hi" ]] && ok "wrote and read" || fail "got '$out'"
 }
 
@@ -124,8 +130,10 @@ test_no_new_privs_set() {
     *) skip "prctl syscall number unknown on $(uname -m)"; return ;;
   esac
   rm -rf "$TMP/wsp" && mkdir -p "$TMP/wsp"
+  # stderr goes to /dev/null: --best-effort emits a warning for missing
+  # /lib64 on non-x86_64, which would otherwise corrupt this capture.
   out=$(uj --rw "$TMP/wsp" --ro /dev \
-    -- /usr/bin/perl -e "print(syscall($nr_prctl, 39, 0, 0, 0, 0) == 1 ? 'set' : 'unset')" 2>&1)
+    -- /usr/bin/perl -e "print(syscall($nr_prctl, 39, 0, 0, 0, 0) == 1 ? 'set' : 'unset')" 2>/dev/null)
   [[ "$out" == "set" ]] && ok "NO_NEW_PRIVS=1" || fail "got '$out'"
 }
 
