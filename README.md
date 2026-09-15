@@ -44,6 +44,7 @@ Plus one shorthand and some operational knobs:
 | `--uid N` | Drop to uid `N` before exec. Needs root. |
 | `--gid N` | Drop to gid `N` (defaults to `--uid`). |
 | `--cwd PATH` | Working directory for the child. |
+| `--unix-socket PATH` | Restrict outbound Unix socket connections to the listed existing paths. Repeatable. Enforced on macOS; other hosts refuse in strict mode or warn under `--best-effort`. No flag means no socket restriction. |
 | `--best-effort` | Don't fail when a requested protection can't be delivered. Warn once on stderr and continue with whatever backend(s) do apply. Without this flag, missing capabilities are fatal. |
 | `-h, --help` | Show help. |
 | `-V, --version` | Show version. |
@@ -68,12 +69,34 @@ one-line stderr warning per missing layer and continues with what the
 host can deliver. Capture stderr in production — that's how you find
 out when a kernel update drops Landlock.
 
+### Unix socket connections
+
+```sh
+agent-jail --best-effort --unix-socket /tmp/session.sock -- my-agent
+```
+
+On macOS, the sandbox denies outbound Unix socket connections except to the
+listed paths, including connections made by descendants. Paths are resolved
+before spawning; a missing path is an error, including under `--best-effort`.
+The socket must remain at a trusted path: protect its parent directory from
+replacement by the child. This is a path allowlist, not server identity validation.
+
+Linux's current Landlock filesystem rules do **not** mediate Unix socket
+connections. `MAKE_SOCK` controls creation of socket files, not connections to
+existing sockets. The Linux backend therefore refuses `--unix-socket` in strict
+mode; `--best-effort` warns and continues **without socket isolation**. Filesystem
+and process restrictions still apply where supported. A successful best-effort
+launch is not evidence that socket isolation is available.
+
+This flag does not restrict TCP/UDP, listening sockets, or socket creation.
+
 ## What it doesn't do
 
 agent-jail covers filesystem isolation (everywhere) and process-tree
 isolation (Linux). It explicitly does NOT:
 
-- Isolate networking (use iptables, nftables, or `unshare -n`)
+- Isolate general networking (use iptables, nftables, or `unshare -n`);
+  the macOS Unix socket connection allowlist above is the limited exception
 - Limit resources (use cgroups or ulimit)
 - Filter syscalls (use seccomp)
 - Sanitize the environment (env vars pass through — sanitize before invoking)
@@ -121,6 +144,7 @@ Requires Zig 0.16+. Single static binary ~215 KB stripped, no runtime deps.
 
 ```
 zig build test                              # unit (Zig)
+python3 tests/unix-socket.py                 # real connections + fallback contract
 ./tests/integration.sh                      # 13 end-to-end
 ./tests/security.sh                         # 27 probes (4 root-only)
 ./tests/harder.sh                           # 18 adversarial (4 root-only)

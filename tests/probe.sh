@@ -21,16 +21,19 @@ source "$DIR/lib.sh"
 PROBE="${PROBE_BIN:-./zig-out/bin/probe}"
 [[ -x "$PROBE" ]] || { echo "probe binary missing at $PROBE — run 'zig build'" >&2; exit 1; }
 
-# Landlock's default-deny needs read+exec on the probe binary itself or
-# the child can't exec it — every test would silently return EACCES and
-# the positive assertions ("read inside --rw should succeed") would fail.
-# Resolve to a canonical directory to cover symlinks (e.g. /tmp→/private/tmp).
-PROBE_ABS=$(cd "$(dirname "$PROBE")" && pwd)/$(basename "$PROBE")
-PROBE_DIR=$(dirname "$PROBE_ABS")
-
-TMP=$(mktemp -d)
-chmod 0755 "$TMP"
+TMP=$(mktemp -d /tmp/agent-jail-probe.XXXXXX) || exit 1
+chmod 0755 "$TMP" || exit 1
 trap 'rm -rf "$TMP" 2>/dev/null' EXIT
+
+# The dropped uid must traverse every parent of the executable. Checkouts
+# and build caches can sit inside private home directories, so stage a copy
+# in the test fixture instead of changing permissions on the checkout.
+mkdir "$TMP/bin" && cp "$PROBE" "$TMP/bin/probe" &&
+  chmod 0755 "$TMP/bin" "$TMP/bin/probe" || exit 1
+# Landlock also needs read+exec on the probe directory. Canonicalize it for
+# hosts where /tmp is a symlink (e.g. /tmp→/private/tmp on macOS).
+PROBE_DIR=$(cd "$TMP/bin" && pwd -P)
+PROBE_ABS="$PROBE_DIR/probe"
 
 # Expected exit codes from the probe binary.
 EX_OK=0

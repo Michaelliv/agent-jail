@@ -42,6 +42,7 @@ const builtin = @import("builtin");
 pub const Error = error{
     PathTooLong,
     OutOfMemory,
+    InvalidSocketPath,
 };
 
 /// True on macOS. Other Apple platforms (iOS, tvOS) also ship the Sandbox
@@ -58,12 +59,14 @@ pub const Policy = struct {
     /// macOS doesn't need it — default-allow permits dir-handle opens
     /// without a rule — so we render nothing.
     list: []const []const u8 = &.{},
+    unix_sockets: []const []const u8 = &.{},
 };
 
 /// Render the policy as a Sandbox profile string. The caller owns the
 /// returned slice (allocated from `arena`).
 pub fn renderProfile(arena: std.mem.Allocator, policy: Policy) Error![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(arena);
 
     try buf.appendSlice(arena, "(version 1)\n(allow default)\n");
 
@@ -77,7 +80,20 @@ pub fn renderProfile(arena: std.mem.Allocator, policy: Policy) Error![]const u8 
     for (policy.ro) |p| try writeRule(arena, &buf, "allow", "file-read*", p);
     // `--list` is a no-op on macOS (see header comment).
 
-    return buf.items;
+    if (policy.unix_sockets.len > 0) {
+        try buf.appendSlice(arena, "(deny network-outbound (remote unix-socket))\n");
+        for (policy.unix_sockets) |p| {
+            var resolved_buf: [std.fs.max_path_bytes]u8 = undefined;
+            // Never silently drop a requested socket grant. The endpoint must
+            // exist before spawning so symlinks resolve to the kernel's path.
+            const resolved = realpath(p, &resolved_buf) catch return error.InvalidSocketPath;
+            try buf.appendSlice(arena, "(allow network-outbound (remote unix-socket (literal ");
+            try writeQuoted(arena, &buf, resolved);
+            try buf.appendSlice(arena, ")))\n");
+        }
+    }
+
+    return buf.toOwnedSlice(arena);
 }
 
 fn writeRule(
@@ -94,18 +110,23 @@ fn writeRule(
     // path that doesn't exist anyway.
     const resolved = realpath(path, &resolved_buf) catch return;
 
-    // SBPL string literals are double-quoted. Backslash and double-quote
-    // are the only chars that need escaping; control chars don't appear
-    // in real filesystem paths but we'd be in deeper trouble if they did.
-    try buf.print(arena, "({s} {s} (subpath \"", .{ verb, operations });
-    for (resolved) |ch| switch (ch) {
+    try buf.print(arena, "({s} {s} (subpath ", .{ verb, operations });
+    try writeQuoted(arena, buf, resolved);
+    try buf.appendSlice(arena, "))\n");
+}
+
+// Filesystem and socket rules share SBPL string escaping; paths are data,
+// never profile expressions, even when they contain quotes or backslashes.
+fn writeQuoted(arena: std.mem.Allocator, buf: *std.ArrayList(u8), value: []const u8) Error!void {
+    try buf.append(arena, '"');
+    for (value) |ch| switch (ch) {
         '"', '\\' => {
             try buf.append(arena, '\\');
             try buf.append(arena, ch);
         },
         else => try buf.append(arena, ch),
     };
-    try buf.appendSlice(arena, "\"))\n");
+    try buf.append(arena, '"');
 }
 
 /// Resolve symlinks via realpath(3). Returns a slice into `out` of the
@@ -149,13 +170,40 @@ test "renderProfile emits the expected SBPL skeleton" {
     try std.testing.expect(std.mem.indexOf(u8, out, "/private/tmp") != null);
 }
 
-test "renderProfile escapes quotes and backslashes in paths" {
-    if (builtin.os.tag != .macos) return error.SkipZigTest;
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    // Empty policy still produces the skeleton.
-    const out = try renderProfile(arena, .{ .rw = &.{}, .ro = &.{}, .hide = &.{} });
+test "empty policy returns an owned slice without socket restrictions" {
+    // Without an allowlist, Unix socket access is unrestricted.
+    const out = try renderProfile(std.testing.allocator, .{ .rw = &.{}, .ro = &.{}, .hide = &.{} });
+    defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("(version 1)\n(allow default)\n", out);
+}
+
+test "SBPL quoting escapes expression delimiters in every path rule" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    try writeQuoted(std.testing.allocator, &buf, "a\"b\\c");
+    try std.testing.expectEqualStrings("\"a\\\"b\\\\c\"", buf.items);
+}
+
+test "profile construction releases allocations at every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const out = try renderProfile(allocator, .{
+                .rw = &.{ "/tmp", "/tmp", "/tmp", "/tmp" },
+                .ro = &.{"/usr"},
+                .hide = &.{},
+                .unix_sockets = &.{ "/tmp", "/tmp" },
+            });
+            defer allocator.free(out);
+        }
+    }.run, .{});
+}
+
+test "missing socket grants are errors rather than silently omitted rules" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    try std.testing.expectError(error.InvalidSocketPath, renderProfile(std.testing.allocator, .{
+        .rw = &.{},
+        .ro = &.{},
+        .hide = &.{},
+        .unix_sockets = &.{"/definitely/missing/agent-jail.sock"},
+    }));
 }
