@@ -21,8 +21,8 @@ source "$DIR/lib.sh"
 PROBE="${PROBE_BIN:-./zig-out/bin/probe}"
 [[ -x "$PROBE" ]] || { echo "probe binary missing at $PROBE — run 'zig build'" >&2; exit 1; }
 
-TMP=$(mktemp -d)
-chmod 0755 "$TMP"
+TMP=$(mktemp -d /tmp/agent-jail-probe.XXXXXX) || exit 1
+chmod 0755 "$TMP" || exit 1
 trap 'rm -rf "$TMP" 2>/dev/null' EXIT
 
 # The dropped uid must traverse every parent of the executable. Checkouts
