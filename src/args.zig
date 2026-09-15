@@ -40,6 +40,8 @@ pub const Parsed = struct {
     /// the only available backend. On macOS the default-allow policy
     /// already permits this; `--list` is a no-op there.
     list: []const []const u8 = &.{},
+    /// If nonempty, outbound Unix socket connections are restricted to these paths.
+    unix_sockets: []const []const u8 = &.{},
     cwd: ?[]const u8 = null,
     best_effort: bool = false,
     command: []const []const u8 = &.{},
@@ -50,6 +52,7 @@ pub fn parse(arena: Allocator, argv: []const [:0]const u8) Error!Parsed {
     var rw: std.ArrayList([]const u8) = .empty;
     var ro: std.ArrayList([]const u8) = .empty;
     var list: std.ArrayList([]const u8) = .empty;
+    var unix_sockets: std.ArrayList([]const u8) = .empty;
 
     var uid: ?u32 = null;
     var gid: ?u32 = null;
@@ -85,6 +88,8 @@ pub fn parse(arena: Allocator, argv: []const [:0]const u8) Error!Parsed {
             try ro.append(arena, try takeValue(argv, &i));
         } else if (mem.eql(u8, arg, "--list")) {
             try list.append(arena, try takeValue(argv, &i));
+        } else if (mem.eql(u8, arg, "--unix-socket")) {
+            try unix_sockets.append(arena, try takeValue(argv, &i));
         } else if (mem.eql(u8, arg, "--system-ro")) {
             for (SYSTEM_RO_PATHS) |p| try ro.append(arena, p);
         } else if (mem.eql(u8, arg, "--cwd")) {
@@ -103,6 +108,7 @@ pub fn parse(arena: Allocator, argv: []const [:0]const u8) Error!Parsed {
         .rw = rw.items,
         .ro = ro.items,
         .list = list.items,
+        .unix_sockets = unix_sockets.items,
         .cwd = cwd,
         .best_effort = best_effort,
         .command = command,
@@ -110,7 +116,7 @@ pub fn parse(arena: Allocator, argv: []const [:0]const u8) Error!Parsed {
 }
 
 fn takeValue(argv: []const [:0]const u8, i: *usize) Error![]const u8 {
-    if (i.* + 1 >= argv.len) return error.MissingValue;
+    if (i.* + 1 >= argv.len or mem.eql(u8, argv[i.* + 1], "--")) return error.MissingValue;
     i.* += 1;
     return argv[i.*];
 }
@@ -138,12 +144,18 @@ test "parse rw/ro/hide" {
 
     const argv = [_][:0]const u8{
         "agent-jail",
-        "--uid",  "1001",
-        "--hide", "/data",
-        "--rw",   "/data/work",
-        "--rw",   "/data/sess",
-        "--ro",   "/usr",
-        "--",     "/bin/sh",
+        "--uid",
+        "1001",
+        "--hide",
+        "/data",
+        "--rw",
+        "/data/work",
+        "--rw",
+        "/data/sess",
+        "--ro",
+        "/usr",
+        "--",
+        "/bin/sh",
     };
     const parsed = try parse(arena, &argv);
 
@@ -176,12 +188,27 @@ test "--best-effort parses to bool" {
     try std.testing.expect(parsed.best_effort);
 }
 
-test "missing value" {
-    const a = std.testing.allocator;
-    var arena_state = std.heap.ArenaAllocator.init(a);
+test "unix socket paths are repeatable and absent by default" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
+    const bare = [_][:0]const u8{ "agent-jail", "--", "true" };
+    try std.testing.expectEqual(@as(usize, 0), (try parse(arena, &bare)).unix_sockets.len);
+    const argv = [_][:0]const u8{ "agent-jail", "--unix-socket", "/tmp/a", "--unix-socket", "/tmp/b", "--", "true" };
+    const parsed = try parse(arena, &argv);
+    try std.testing.expectEqual(@as(usize, 2), parsed.unix_sockets.len);
+    try std.testing.expectEqualStrings("/tmp/a", parsed.unix_sockets[0]);
+    try std.testing.expectEqualStrings("/tmp/b", parsed.unix_sockets[1]);
+}
 
-    const argv = [_][:0]const u8{ "agent-jail", "--uid" };
-    try std.testing.expectError(error.MissingValue, parse(arena, &argv));
+test "every value-taking flag rejects a missing value or command delimiter" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    for ([_][:0]const u8{ "--uid", "--gid", "--hide", "--rw", "--ro", "--list", "--unix-socket", "--cwd" }) |flag| {
+        const missing = [_][:0]const u8{ "agent-jail", flag };
+        const delimiter = [_][:0]const u8{ "agent-jail", flag, "--", "true" };
+        try std.testing.expectError(error.MissingValue, parse(arena, &missing));
+        try std.testing.expectError(error.MissingValue, parse(arena, &delimiter));
+    }
 }

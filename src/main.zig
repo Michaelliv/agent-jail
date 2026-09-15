@@ -34,7 +34,7 @@ pub fn main(init: std.process.Init) !u8 {
             return 0;
         },
         error.VersionRequested => {
-            try stdout.writeAll("agent-jail 0.4.0\n");
+            try stdout.writeAll("agent-jail 0.5.0\n");
             try stdout.flush();
             return 0;
         },
@@ -80,6 +80,18 @@ pub fn main(init: std.process.Init) !u8 {
         }
     }
 
+    // Path-based Landlock rules do not mediate connect(2) on Unix sockets.
+    // A supported filesystem sandbox is not evidence of socket isolation.
+    if (parsed.unix_sockets.len > 0 and plan.backend != .sandbox_exec) {
+        if (parsed.best_effort) {
+            try stderr.writeAll("agent-jail: warning: Unix socket connection restrictions are unavailable on this host; continuing under --best-effort without socket isolation.\n");
+        } else {
+            try stderr.writeAll("agent-jail: Unix socket connection restrictions are unavailable on this host. Pass --best-effort to proceed without socket isolation.\n");
+        }
+        try stderr.flush();
+        if (!parsed.best_effort) return 1;
+    }
+
     const ids: sandbox.Ids = .{
         .uid = parsed.uid orelse 0,
         .gid = parsed.gid orelse parsed.uid orelse 0,
@@ -123,6 +135,13 @@ fn printUsage(w: *std.Io.Writer) !void {
         \\  --system-ro            Shorthand: --ro on standard system dirs
         \\                         (/usr /lib /lib64 /bin /sbin /etc /usr/sbin).
         \\                         Missing paths are skipped.
+        \\
+        \\Unix sockets:
+        \\  --unix-socket PATH     Allow outbound Unix socket connections only to
+        \\                         listed paths. Repeatable; existing paths only.
+        \\                         Enforced on macOS. Other hosts refuse unless
+        \\                         --best-effort (warns, no socket isolation).
+        \\                         Does not restrict TCP/UDP or socket creation.
         \\
         \\Identity:
         \\  --uid N                Drop to this uid before exec (needs root).

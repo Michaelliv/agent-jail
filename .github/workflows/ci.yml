@@ -26,6 +26,9 @@ jobs:
       - name: zig build test
         run: zig build test --summary all
 
+      - name: Unix socket connection restrictions
+        run: python3 tests/unix-socket.py
+
       - name: integration.sh
         run: ./tests/integration.sh
 

@@ -36,6 +36,7 @@ pub const Error = error{
     OutOfMemory,
     PathTooLong,
     Unexpected,
+    InvalidSocketPath,
 };
 
 /// What mechanism will actually sandbox the child. Resolved by `pickBackend`
@@ -133,8 +134,9 @@ pub fn applyPermissions(args: Args.Parsed, ids: Ids) Error!void {
 /// present on every host (e.g. /lib64 on Alpine).
 pub fn existingRoPaths(arena: std.mem.Allocator, ro: []const []const u8) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
+    errdefer out.deinit(arena);
     for (ro) |p| if (pathExists(p)) try out.append(arena, p);
-    return out.items;
+    return out.toOwnedSlice(arena);
 }
 
 /// Decide which backend(s) apply given the CLI args and host capabilities.
@@ -143,18 +145,18 @@ pub fn pickBackend(args: Args.Parsed) Backend {
     const wants_paths = args.rw.len > 0 or args.ro.len > 0 or
         args.hide.len > 0 or args.list.len > 0;
 
-    if (!wants_uid and !wants_paths) return .none;
+    if (!wants_uid and !wants_paths and args.unix_sockets.len == 0) return .none;
 
-    // macOS: any path verb routes through sandbox-exec. uid is layered
+    // macOS: filesystem or socket rules select sandbox-exec. uid is layered
     // separately in childSetup, so --uid + paths still works — the kernel
     // sees both the SBPL profile and the dropped uid.
-    if (darwin.isAvailable() and wants_paths) return .sandbox_exec;
+    if (darwin.isAvailable() and (wants_paths or args.unix_sockets.len > 0)) return .sandbox_exec;
 
     const ll_ok = builtin.os.tag == .linux and landlock.isAvailable();
 
     if (wants_uid and ll_ok and wants_paths) return .uid_and_landlock;
     if (wants_uid) return .uid_switch;
-    if (ll_ok) return .landlock;
+    if (ll_ok and wants_paths) return .landlock;
     return .none;
 }
 
@@ -252,9 +254,11 @@ fn buildSandboxExecArgv(arena: std.mem.Allocator, args: Args.Parsed) Error![]con
         .ro = args.ro,
         .hide = args.hide,
         .list = args.list,
+        .unix_sockets = args.unix_sockets,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.PathTooLong => return error.PathTooLong,
+        error.InvalidSocketPath => return error.InvalidSocketPath,
     };
 
     // [sandbox-exec, -p, <profile>, <command...>]
@@ -633,6 +637,28 @@ const c = struct {
 };
 
 // ── tests ────────────────────────────────────────────────────────────
+
+test "existing read-only paths return an owned slice" {
+    const paths = try existingRoPaths(std.testing.allocator, &.{ "/", "/definitely/missing/agent-jail" });
+    defer std.testing.allocator.free(paths);
+    try std.testing.expectEqual(@as(usize, 1), paths.len);
+    try std.testing.expectEqualStrings("/", paths[0]);
+}
+
+test "path filtering releases allocations at every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const paths = [_][]const u8{"/"} ** 64;
+            const out = try existingRoPaths(allocator, &paths);
+            defer allocator.free(out);
+        }
+    }.run, .{});
+}
+
+test "socket-only policy selects only a backend that enforces it" {
+    const backend = pickBackend(.{ .unix_sockets = &.{"/tmp/socket"} });
+    try std.testing.expectEqual(if (builtin.os.tag == .macos) Backend.sandbox_exec else Backend.none, backend);
+}
 
 test "chown nonexistent → FileNotFound" {
     try std.testing.expectError(error.FileNotFound, chown("/definitely/does/not/exist/12345", 0, 0));
