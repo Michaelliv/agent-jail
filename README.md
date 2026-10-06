@@ -41,7 +41,7 @@ Plus one shorthand and some operational knobs:
 | Flag | Meaning |
 |---|---|
 | `--system-ro` | Expands to `--ro` on `/usr`, `/lib`, `/lib64`, `/bin`, `/sbin`, `/etc`, `/usr/sbin`. Paths that don't exist on this host are skipped. |
-| `--uid N` | Drop to uid `N` before exec. Needs root. |
+| `--uid N` | Drop to uid `N` before exec. Needs root. Each `--rw` path is handed to `N` at mode 0700, except a world-writable one (`/dev/null`, `/tmp`): `N` can already write it and other users share it, so it keeps its owner and mode. |
 | `--gid N` | Drop to gid `N` (defaults to `--uid`). |
 | `--cwd PATH` | Working directory for the child. |
 | `--unix-socket PATH` | Restrict outbound Unix socket connections to the listed existing paths. Repeatable. Enforced on macOS; other hosts refuse in strict mode or warn under `--best-effort`. No flag means no socket restriction. |

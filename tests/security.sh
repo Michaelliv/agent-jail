@@ -203,6 +203,41 @@ test_uid_drop_actually_isolates() {
   [[ "$out" == "$uid" ]] && ok "child id -u == $uid" || fail "got '$out'"
 }
 
+test_uid_drop_keeps_shared_paths() {
+  if ! is_root; then skip "shared path test (need root)"; return; fi
+  echo "test: --rw on a world-writable path under --uid is a grant, not a handover"
+  uid=$(pick_unpriv_uid)
+  rm -rf "$TMP/shared"
+  mkdir -p "$TMP/shared"
+  chmod 1777 "$TMP/shared"
+  dev_before="$(owner_of /dev/null):$(mode_of /dev/null)"
+  dir_before="$(owner_of "$TMP/shared"):$(mode_of "$TMP/shared")"
+  "$BIN" --best-effort --uid "$uid" --ro / --rw /dev/null --rw "$TMP/shared" \
+    -- "$SH" -c "echo x > /dev/null && echo x > $TMP/shared/mine"
+  rc=$?
+  dev_after="$(owner_of /dev/null):$(mode_of /dev/null)"
+  dir_after="$(owner_of "$TMP/shared"):$(mode_of "$TMP/shared")"
+  [[ $rc -eq 0 ]] && ok "child writes both" || fail "write failed (exit $rc)"
+  [[ "$dev_after" == "$dev_before" ]] && ok "/dev/null still $dev_after" \
+    || fail "/dev/null changed from $dev_before to $dev_after"
+  [[ "$dir_after" == "$dir_before" ]] && ok "shared dir still $dir_after" \
+    || fail "shared dir changed from $dir_before to $dir_after"
+}
+
+test_uid_drop_hands_over_private_dir() {
+  if ! is_root; then skip "private dir handover test (need root)"; return; fi
+  echo "test: --rw on a root-owned 0755 dir under --uid hands it to the uid at 0700"
+  uid=$(pick_unpriv_uid)
+  rm -rf "$TMP/wsp"
+  mkdir -p "$TMP/wsp"
+  chmod 0755 "$TMP/wsp"
+  "$BIN" --best-effort --uid "$uid" --ro / --rw "$TMP/wsp" -- "$SH" -c "echo x > $TMP/wsp/mine"
+  rc=$?
+  got="$(owner_of "$TMP/wsp"):$(mode_of "$TMP/wsp")"
+  [[ $rc -eq 0 && "$got" == "$uid:700" ]] && ok "handed over ($got)" \
+    || fail "rc=$rc owner:mode=$got expected $uid:700"
+}
+
 test_uid_drop_blocks_root_files() {
   if ! is_root; then skip "deny enforcement test (need root)"; return; fi
   echo "test: child as unpriv uid CANNOT read root-owned 0700 dir"
@@ -295,6 +330,8 @@ test_rw_symlink_to_outside
 test_hide_does_not_create
 test_hide_existing_chmods_700
 test_uid_drop_actually_isolates
+test_uid_drop_keeps_shared_paths
+test_uid_drop_hands_over_private_dir
 test_uid_drop_blocks_root_files
 test_uid_drop_blocks_workspace_escape
 test_uid_drop_cannot_re_elevate
