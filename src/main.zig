@@ -34,7 +34,7 @@ pub fn main(init: std.process.Init) !u8 {
             return 0;
         },
         error.VersionRequested => {
-            try stdout.writeAll("agent-jail 0.5.0\n");
+            try stdout.writeAll("agent-jail 0.5.1\n");
             try stdout.flush();
             return 0;
         },
