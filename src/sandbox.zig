@@ -78,6 +78,10 @@ pub const Plan = struct {
 ///           plus chown to caller when uid switching.
 /// - `rw`:   created if missing, mode 0700 (only on paths we created or
 ///           when uid switching), chown to sandbox uid when switching.
+///           A world-writable path (`/dev/null`, `/tmp`) is not handed
+///           over: the sandbox uid can already write it, and every other
+///           uid shares it, so it keeps its owner and mode and gets the
+///           Landlock grant only.
 ///
 /// The chmods on pre-existing `--rw` paths are deliberately skipped
 /// without uid switching — they'd fail loudly on root-owned paths like
@@ -109,11 +113,15 @@ pub fn applyPermissions(args: Args.Parsed, ids: Ids) Error!void {
         // Reject symlinks at the top of an rw path: following one would
         // silently retarget the sandbox to the link target.
         if (try isSymlink(path)) return error.AccessDenied;
-        if (switching_uid) try chown(path, ids.uid, ids.gid);
-        // Lock down to 0700, but only on paths we just created (and so
-        // own). Pre-existing paths might be root-owned (--rw /dev) or
-        // shared with other tools, where chmod would fail or be wrong.
-        if (switching_uid or created) try chmod(path, 0o700);
+        // Handing a shared path to one sandbox uid at 0700 takes it away
+        // from every other uid, and from every process already running.
+        const hand_over = switching_uid and !(try isWorldWritable(path));
+        if (hand_over) try chown(path, ids.uid, ids.gid);
+        // Lock down to 0700 what the sandbox uid now owns, or what this
+        // call created. Without a uid switch a pre-existing path stays as
+        // it is: it may be root-owned (--rw /dev), where chmod would fail,
+        // or shared with other tools, where it would be wrong.
+        if (hand_over or created) try chmod(path, 0o700);
     }
 
     // ro paths must already exist; missing is fatal unless --best-effort.
@@ -553,6 +561,31 @@ fn pathExists(path: []const u8) bool {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const z = std.fmt.bufPrintZ(&buf, "{s}", .{path}) catch return false;
     return c.access(z.ptr, 0) == 0; // F_OK
+}
+
+/// Whether every user may write `path` (the `o+w` bit), not following a
+/// symlink. statx(2) on Linux, where Zig exposes no libc `stat`;
+/// fstatat(2) elsewhere.
+fn isWorldWritable(path: []const u8) Error!bool {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const z = std.fmt.bufPrintZ(&buf, "{s}", .{path}) catch return error.PathTooLong;
+    const S_IWOTH: u32 = 0o002;
+    if (builtin.os.tag == .linux) {
+        const linux = std.os.linux;
+        var stx: linux.Statx = undefined;
+        const rc = linux.statx(linux.AT.FDCWD, z.ptr, linux.AT.SYMLINK_NOFOLLOW, .{ .MODE = true }, &stx);
+        return switch (linux.errno(rc)) {
+            .SUCCESS => stx.mode & S_IWOTH != 0,
+            .NOENT => error.FileNotFound,
+            .ACCES, .PERM => error.AccessDenied,
+            else => error.Unexpected,
+        };
+    }
+    var st: std.c.Stat = undefined;
+    if (std.c.fstatat(std.c.AT.FDCWD, z.ptr, &st, std.c.AT.SYMLINK_NOFOLLOW) != 0) {
+        return errnoToError();
+    }
+    return @as(u32, @intCast(st.mode)) & S_IWOTH != 0;
 }
 
 /// Probe via readlink(2): succeeds if path is a symlink, fails EINVAL if
